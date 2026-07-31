@@ -1,0 +1,17 @@
+{
+  "name": "kelder",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "bundle": "esbuild app.jsx --bundle --minify --format=iife --loader:.jsx=jsx --outfile=app.js"
+  },
+  "dependencies": {
+    "lucide-react": "0.383.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
