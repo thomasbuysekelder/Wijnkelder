@@ -229,6 +229,22 @@ async function callClaude(body) {
   return data;
 }
 
+const SEARCH_URL = "/api/search";
+// free search snippets (own endpoint) — keeps AI context tiny and cheap
+async function fetchSnippets(query) {
+  try {
+    const res = await fetch(SEARCH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    const items = (data && data.results) || [];
+    const text = items.map((r) => `- ${r.title}: ${r.snippet}`).join("\n");
+    return text.slice(0, 2600);
+  } catch { return ""; }
+}
+
 const WINE_SCHEMA = `{
   "producer": "domein/producent",
   "name": "naam van de cuvée",
@@ -274,15 +290,15 @@ async function analyzePhoto(images) {
 
 // identify a wine from a typed name (fallback when a photo isn't recognized)
 async function searchWineByName(query) {
+  const ctx = await fetchSnippets(`${query} wijn`);
   const body = {
     model: "claude-haiku-4-5-20251001",
-    max_tokens: 1500,
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
+    max_tokens: 1400,
     system:
-      "Je bent een ervaren sommelier. Identificeer de wijn op basis van de zoekterm van de gebruiker. " +
-      "Doe hoogstens één gerichte web search; vul de rest aan uit je eigen kennis. " +
+      "Je bent een ervaren sommelier. Identificeer de wijn op basis van de zoekterm en de meegeleverde zoekresultaten, aangevuld met je eigen kennis. " +
+      "Zonder bruikbare zoekresultaten: baseer je op kennis en zet 'schatting' in priceNote. " +
       "Begin je antwoord met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige, geldige JSON-object volgens het schema, zonder tekst errond of markdown.",
-    messages: [{ role: "user", content: `Zoekterm: ${query}\n\nGeef exact dit JSON-object terug:\n${WINE_SCHEMA}` }],
+    messages: [{ role: "user", content: `Zoekterm: ${query}\n\nZoekresultaten:\n${ctx || "(geen)"}\n\nGeef exact dit JSON-object terug:\n${WINE_SCHEMA}` }],
   };
   const data = await callClaude(body);
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
@@ -306,15 +322,16 @@ async function lookupWineFull(b) {
   "lng": lengtegraad als getal
 }`;
   const wijn = [b.producer, b.name, b.vintage, "-", b.region, b.country].filter(Boolean).join(" ");
+  const ctx = await fetchSnippets(`${[b.producer, b.name, b.vintage].filter(Boolean).join(" ")} wijn prijs review`);
   const body = {
-    model: "claude-sonnet-4-6",
-    max_tokens: 1800,
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1400,
     system:
-      "Je bent een ervaren sommelier. Zoek de opgegeven wijn en specifieke jaargang op. " +
+      "Je bent een ervaren sommelier. Gebruik de meegeleverde zoekresultaten samen met je eigen kennis; noem bij recensies de bronnamen uit de zoekresultaten als die er zijn. " +
+      "Zonder bruikbare zoekresultaten: baseer je op kennis en vermeld dat de prijs een schatting is. " +
       "Alle waarden (prijs, drinkvenster, score, recensies, beschrijving) moeten gelden voor die specifieke jaargang. " +
       "Begin met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige geldige JSON-object volgens het schema, zonder tekst errond of markdown.",
-    messages: [{ role: "user", content: `Wijn en jaargang: ${wijn}\n\nGeef exact dit JSON-object terug:\n${schema}` }],
+    messages: [{ role: "user", content: `Wijn en jaargang: ${wijn}\n\nZoekresultaten:\n${ctx || "(geen)"}\n\nGeef exact dit JSON-object terug:\n${schema}` }],
   };
   const data = await callClaude(body);
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");

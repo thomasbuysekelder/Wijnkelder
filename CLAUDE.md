@@ -30,9 +30,14 @@ bewust uit: pushen naar `main` deployt de bestanden zoals ze zijn. Bouw dus alti
 lokaal vóór het committen.
 
 ## Kostenregels (belangrijk voor de eigenaar)
-- Foto-analyse en zoeken-op-naam draaien op Haiku (claude-haiku-4-5-20251001);
-  foto-analyse ZONDER web search (prijs = schatting, gemarkeerd in notes).
-- `lookupWineFull` (detailkaart "Info opzoeken") gebruikt Sonnet + web search en
-  wordt UITSLUITEND door een expliciete tik van de gebruiker gestart. Voeg nooit
-  automatische verrijkingen toe (bij openen, bij bulk, in lussen): elke call kost geld.
+- ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit
+  een duurder model zonder expliciete vraag van de eigenaar.
+- Foto-analyse: ZONDER web search (prijs = schatting, gemarkeerd in notes).
+- Gebruik NOOIT de ingebouwde web_search-tool van de API: zelfs met max_uses:1
+  kostte één opzoeking ~$0,28 door de omvang van de teruggegeven resultaten.
+  Zoeken gebeurt via het eigen gratis endpoint `/api/search` (DuckDuckGo-snippets,
+  afgekapt op ~2600 tekens) dat als tekst wordt meegegeven aan één Haiku-call.
+- `lookupWineFull` (detailkaart "Info opzoeken") wordt UITSLUITEND door een
+  expliciete tik gestart. Voeg nooit automatische verrijkingen toe (bij openen,
+  bij bulk, in lussen): elke call kost geld.
 - Upload-afbeeldingen blijven max 1200px JPEG.
