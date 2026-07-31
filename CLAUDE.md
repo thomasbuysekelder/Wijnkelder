@@ -29,15 +29,47 @@ Alles staat in de hoofdmap van de repo. `vercel.json` schakelt build/install op 
 bewust uit: pushen naar `main` deployt de bestanden zoals ze zijn. Bouw dus altijd
 lokaal vóór het committen.
 
+## Prijsbepaling
+- De foto-analyse zelf zoekt niets op (enkel etiket + kennis van het model); de
+  prijs daaruit is een ruwe schatting die meteen daarna door de opzoeking wordt
+  vervangen.
+- De retailprijs komt uit echte winkelprijzen, niet uit een gok van het model.
+  `/api/search` haalt naast de DuckDuckGo-snippets ook Vivino-aanbiedingen op
+  (EUR, markt BE, per jaargang); `marketPrice()` in `app.jsx` kiest de exacte
+  jaargang, anders naburige jaargangen, en negeert andere flesformaten.
+- Vivino is een NIET-OFFICIËLE bron (ongedocumenteerd endpoint) en wordt hier
+  enkel voor persoonlijk gebruik aangesproken. Bij commercialisering van deze app
+  moet die bron vervangen worden door een officiële databron met licentie.
+- Vivino is een extra bovenop de snippets, geen vereiste: valt de bron weg of
+  geeft ze niets terug, dan blijft alles werken op de snippets en de kennis van
+  het model, met "schatting" in `priceNote`.
+- Waar de prijs op steunt, staat altijd in `priceNote` en is zichtbaar op de
+  detailkaart. Een nieuwe opzoeking mag de retailprijs overschrijven (anders kan
+  je een foute prijs nooit corrigeren); `ownValue` en `purchasePrice` niet.
+- DuckDuckGo beantwoordt GET-verzoeken vanaf een server met een lege pagina
+  (HTTP 202). `/api/search` moet dus met POST zoeken.
+
 ## Kostenregels (belangrijk voor de eigenaar)
 - ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit
   een duurder model zonder expliciete vraag van de eigenaar.
-- Foto-analyse: ZONDER web search (prijs = schatting, gemarkeerd in notes).
 - Gebruik NOOIT de ingebouwde web_search-tool van de API: zelfs met max_uses:1
   kostte één opzoeking ~$0,28 door de omvang van de teruggegeven resultaten.
-  Zoeken gebeurt via het eigen gratis endpoint `/api/search` (DuckDuckGo-snippets,
-  afgekapt op ~2600 tekens) dat als tekst wordt meegegeven aan één Haiku-call.
-- `lookupWineFull` (detailkaart "Info opzoeken") wordt UITSLUITEND door een
-  expliciete tik gestart. Voeg nooit automatische verrijkingen toe (bij openen,
-  bij bulk, in lussen): elke call kost geld.
+  Deze regel blijft onverkort gelden. Zoeken gebeurt via het eigen gratis endpoint
+  `/api/search` (snippets afgekapt op ~2600 tekens + prijzen) dat als tekst wordt
+  meegegeven aan één Haiku-call.
+- Eén volledige opzoeking (`lookupWineFull`) kost ±1 cent: `/api/search` is gratis
+  en er gaat één Haiku-call overheen. Daarom is automatisch opzoeken bij het
+  TOEVOEGEN van een fles toegestaan (na foto-analyse, na zoeken op naam, en in de
+  achtergrond na handmatig toevoegen).
+- Nog altijd verboden: opzoeken in lussen of bij het openen/tonen van een fles,
+  en automatisch opzoeken bij bulk-invoer van meerdere jaargangen — daar blijft
+  de expliciete tik op "Info opzoeken" gelden.
 - Upload-afbeeldingen blijven max 1200px JPEG.
+
+## Releaseroutine
+Sluit ELKE wijzigingsopdracht altijd automatisch af met, in deze volgorde:
+1. `npm run bundle`
+2. het cachenummer in `sw.js` één hoger (`kelder-vN`)
+3. commit + push naar `main`
+
+Doe dit ook als de gebruiker er niet om vraagt.

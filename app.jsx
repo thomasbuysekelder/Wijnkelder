@@ -17,6 +17,7 @@ const EMPTY = {
   purchasePrice: "", retailValue: "", ownValue: "",
   supplier: "", score: "", drinkFrom: "", drinkTo: "", notes: "", tasteNotes: "",
   grape: "", description: "", reviews: "", lat: "", lng: "", placeName: "", imageUrl: "", enriched: false,
+  priceNote: "",
 };
 
 // which value counts for portfolio math: own estimate if set, else retail
@@ -230,19 +231,65 @@ async function callClaude(body) {
 }
 
 const SEARCH_URL = "/api/search";
-// free search snippets (own endpoint) — keeps AI context tiny and cheap
-async function fetchSnippets(query) {
+// free search (own endpoint) — snippets voor tekst + optionele marktprijzen.
+// Faalt de prijsbron, dan blijven de snippets gewoon werken.
+async function fetchSearch({ query, wine }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, wine }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
-    const text = items.map((r) => `- ${r.title}: ${r.snippet}`).join("\n");
-    return text.slice(0, 2600);
-  } catch { return ""; }
+    const text = items.map((r) => `- ${r.title}: ${r.snippet}`).join("\n").slice(0, 2600);
+    return { text, offers: Array.isArray(data && data.offers) ? data.offers : [] };
+  } catch { return { text: "", offers: [] }; }
+}
+async function fetchSnippets(query) { return (await fetchSearch({ query })).text; }
+
+// ---------- marktprijs uit echte aanbiedingen ----------
+// Woorden die niets onderscheidends zeggen en dus niet meetellen bij het matchen.
+const PRICE_STOP = new Set(["the", "and", "van", "der", "des", "del", "della", "dei", "les", "las",
+  "chateau", "château", "domaine", "weingut", "tenuta", "bodega", "bodegas", "cantina", "azienda",
+  "agricola", "wijn", "wine", "vino", "vin", "cru", "grand", "premier", "classe", "classé", "reserva", "riserva"]);
+const keyTokens = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, " ").split(" ").filter((t) => t.length > 2 && !PRICE_STOP.has(t));
+const tokenRatio = (want, hay) => (want.length ? want.filter((t) => hay.includes(t)).length / want.length : 0);
+// hoe zeker hoort dit aanbod bij deze fles? 0..1
+function offerMatch(offer, b) {
+  const hay = [...keyTokens(offer.producer), ...keyTokens(offer.name)];
+  const p = keyTokens(b.producer), n = keyTokens(b.name);
+  if (!hay.length || (!p.length && !n.length)) return 0;
+  const rp = tokenRatio(p, hay), rn = tokenRatio(n, hay);
+  if (!p.length) return rn;
+  if (!n.length) return rp;
+  return 0.6 * rp + 0.4 * rn;
+}
+const median = (arr) => {
+  const s = [...arr].sort((a, b) => a - b), m = Math.floor(s.length / 2);
+  return Math.round((s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) * 100) / 100;
+};
+// kies een marktprijs: eerst de exacte jaargang, anders naburige jaargangen van dezelfde wijn
+function marketPrice(offers, b) {
+  const cand = (offers || []).filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55);
+  if (!cand.length) return null;
+  const y = parseInt(b.vintage);
+  const exact = y ? cand.filter((o) => parseInt(o.vintage) === y) : [];
+  if (exact.length) return { price: median(exact.map((o) => num(o.price))), basis: "exact", n: exact.length, years: [y] };
+  const near = y ? cand.filter((o) => Math.abs(parseInt(o.vintage) - y) <= 5) : [];
+  const pool = near.length ? near : cand;
+  const years = [...new Set(pool.map((o) => o.vintage).filter(Boolean))].sort();
+  return { price: median(pool.map((o) => num(o.price))), basis: "nabij", n: pool.length, years };
+}
+// leesbare lijst voor de AI-prompt (blijft klein: max 12 regels)
+function offerLines(offers, b) {
+  return (offers || [])
+    .filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55)
+    .sort((a, c) => Math.abs(num(a.vintage) - num(b.vintage)) - Math.abs(num(c.vintage) - num(b.vintage)))
+    .slice(0, 12)
+    .map((o) => `- ${[o.producer, o.name].filter(Boolean).join(" ")} ${o.vintage}: € ${o.price}`)
+    .join("\n");
 }
 
 const WINE_SCHEMA = `{
@@ -312,7 +359,8 @@ async function lookupWineFull(b) {
   const schema = `{
   "grape": "druif/druiven met percentages indien gekend, bv. 'Nerello Mascalese 90%, Nerello Cappuccio 10%'",
   "description": "beschrijving van deze wijn en jaargang in het Nederlands, 2-3 zinnen",
-  "retailPrice": actuele retailprijs per fles in EUR voor deze jaargang als getal,
+  "retailPrice": winkelprijs per fles van 75 cl in EUR voor deze jaargang als getal,
+  "priceNote": "in één korte zin: waarop de prijs steunt (marktprijs, prijs andere jaargang, of schatting)",
   "drinkFrom": beste drinkjaar vanaf voor deze jaargang (getal),
   "drinkTo": beste drinkjaar tot voor deze jaargang (getal),
   "score": kritiekscore 0-100 voor deze jaargang indien gekend anders null,
@@ -322,22 +370,54 @@ async function lookupWineFull(b) {
   "lng": lengtegraad als getal
 }`;
   const wijn = [b.producer, b.name, b.vintage, "-", b.region, b.country].filter(Boolean).join(" ");
-  const ctx = await fetchSnippets(`${[b.producer, b.name, b.vintage].filter(Boolean).join(" ")} wijn prijs review`);
+  const { text: ctx, offers } = await fetchSearch({
+    query: `${[b.producer, b.name, b.vintage].filter(Boolean).join(" ")} wijn prijs per fles review`,
+    wine: { producer: b.producer, name: b.name, vintage: b.vintage },
+  });
+  const mp = marketPrice(offers, b);
+  const lines = offerLines(offers, b);
+  const priceCtx = lines
+    ? `Echte winkelprijzen (75 cl, EUR, Belgische markt):\n${lines}\n` +
+      (mp ? (mp.basis === "exact"
+        ? `Prijs voor jaargang ${b.vintage}: € ${mp.price}. Gebruik dit bedrag exact als retailPrice.\n`
+        : `Voor jaargang ${b.vintage} is er geen aanbod; naburige jaargangen (${mp.years.join(", ")}) liggen rond € ${mp.price}. Leid de prijs hiervan af.\n`) : "")
+    : "Geen winkelprijzen gevonden.\n";
   const body = {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1400,
     system:
       "Je bent een ervaren sommelier. Gebruik de meegeleverde zoekresultaten samen met je eigen kennis; noem bij recensies de bronnamen uit de zoekresultaten als die er zijn. " +
-      "Zonder bruikbare zoekresultaten: baseer je op kennis en vermeld dat de prijs een schatting is. " +
+      "Voor de prijs geldt een strikte volgorde: (1) een meegegeven winkelprijs voor exact deze jaargang neem je letterlijk over; " +
+      "(2) anders leid je af uit de prijzen van naburige jaargangen; (3) pas als er niets is, schat je op eigen kennis en schrijf je 'schatting' in priceNote. " +
+      "Verzin nooit een prijs die de meegegeven bedragen tegenspreekt. Het gaat altijd om één fles van 75 cl. " +
       "Alle waarden (prijs, drinkvenster, score, recensies, beschrijving) moeten gelden voor die specifieke jaargang. " +
       "Begin met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige geldige JSON-object volgens het schema, zonder tekst errond of markdown.",
-    messages: [{ role: "user", content: `Wijn en jaargang: ${wijn}\n\nZoekresultaten:\n${ctx || "(geen)"}\n\nGeef exact dit JSON-object terug:\n${schema}` }],
+    messages: [{ role: "user", content: `Wijn en jaargang: ${wijn}\n\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\nGeef exact dit JSON-object terug:\n${schema}` }],
   };
   const data = await callClaude(body);
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
-  return parsed;
+  return applyMarketPrice(parsed, mp, b);
+}
+
+// Echte aanbiedingen winnen van een schatting van het model; zonder aanbiedingen
+// blijft de schatting staan, maar dan wel duidelijk gemarkeerd.
+function applyMarketPrice(res, mp, b) {
+  const guess = num(res.retailPrice);
+  if (mp && mp.basis === "exact") {
+    res.retailPrice = mp.price;
+    res.priceNote = `marktprijs jaargang ${b.vintage} (${mp.n} aanbieding${mp.n > 1 ? "en" : ""}, 75 cl)`;
+  } else if (mp) {
+    // model mag interpoleren, maar niet wegdrijven van de echte prijzen
+    const ok = guess > 0 && guess >= mp.price / 3 && guess <= mp.price * 3;
+    res.retailPrice = ok ? guess : mp.price;
+    res.priceNote = `afgeleid uit jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")} (rond € ${mp.price})`;
+  } else {
+    res.retailPrice = guess > 0 ? guess : "";
+    res.priceNote = guess > 0 ? "schatting, geen winkelprijs gevonden" : "";
+  }
+  return res;
 }
 
 // map an analysis/search result into a bottle draft
@@ -352,8 +432,31 @@ function resultToData(res) {
     purchasePrice: "", retailValue: res.retailPrice ?? res.retailValue ?? "", ownValue: "",
     supplier: "", score: res.score ?? "",
     drinkFrom: res.drinkFrom ?? "", drinkTo: res.drinkTo ?? "",
-    notes: [res.priceNote, res.notes].filter(Boolean).join(" · "),
+    notes: res.notes || "",
+    priceNote: res.priceNote || "",
     _confidence: res.confidence || "",
+  };
+}
+
+// velden die 'Info opzoeken' oplevert, samengevoegd met wat er al staat.
+// De prijs wordt bewust WEL overschreven: een nieuwe opzoeking moet een
+// verkeerde prijs kunnen corrigeren. Eigen waarde en aankoopprijs blijven.
+function enrichPatch(b, r, { keepFilled = false } = {}) {
+  const keep = (cur, next) => (keepFilled && cur !== "" && cur != null ? cur : (next ?? cur ?? ""));
+  const price = r.retailPrice ?? "";
+  return {
+    grape: b.grape || r.grape || "",
+    description: r.description || b.description || "",
+    reviews: r.reviews || b.reviews || "",
+    placeName: r.placeName || b.placeName || "",
+    lat: r.lat ?? b.lat ?? "",
+    lng: r.lng ?? b.lng ?? "",
+    retailValue: keepFilled ? keep(b.retailValue, price) : (price !== "" ? price : b.retailValue),
+    priceNote: r.priceNote || "",
+    drinkFrom: keep(b.drinkFrom, r.drinkFrom),
+    drinkTo: keep(b.drinkTo, r.drinkTo),
+    score: keep(b.score, r.score),
+    enriched: true,
   };
 }
 
@@ -449,7 +552,8 @@ export default function App() {
   }, [bottles]);
 
   // ---- CRUD ----
-  const commitNew = (list, b) => [{ ...cleanBottle(b), id: uid() }, ...list];
+  // behoudt een al toegekende id, zodat een achtergrondopzoeking de juiste fles bijwerkt
+  const commitNew = (list, b) => [{ ...cleanBottle(b), id: b.id || uid() }, ...list];
   // add a new bottle, but stop for confirmation if the same wine already exists
   const addOrPrompt = (b, source) => {
     const cleaned = { ...cleanBottle(b), color: String(b.color || "rood").toLowerCase() };
@@ -479,9 +583,17 @@ export default function App() {
     if (!b.name && !b.producer) { flash("Naam of producent is verplicht."); return; }
     b.color = String(b.color).toLowerCase();
     if (b.id) { persist(bottles.map((x) => (x.id === b.id ? b : x))); setEdit(null); return; }
-    const added = addOrPrompt(b, null);
+    const nieuw = { ...cleanBottle(b), id: uid() };
+    const added = addOrPrompt(nieuw, null);
     setEdit(null);
-    if (added) flash("Toegevoegd aan de kelder.");
+    if (added) { flash("Toegevoegd, info wordt opgezocht…"); autoLookup(nieuw); }
+  };
+  // achtergrondopzoeking na handmatig toevoegen: vult enkel lege velden aan,
+  // zodat wat je zelf intikte blijft staan
+  const autoLookup = (b) => {
+    lookupWineFull(b)
+      .then((r) => { patchBottle(b.id, enrichPatch(b, r, { keepFilled: true })); flash("Info opgezocht en aangevuld."); })
+      .catch(() => flash("Toegevoegd. Info opzoeken lukte niet."));
   };
   const removeBottle = (id) => persist(bottles.filter((b) => b.id !== id));
 
@@ -566,11 +678,25 @@ export default function App() {
     };
     rd.readAsDataURL(f);
   });
+  // etiket lezen en meteen de volledige info (prijs, drinkvenster, recensies) ophalen
   const runAnalyze = (jobId, images) => {
     analyzePhoto(images)
-      .then((res) => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId ? { ...j, status: "done", data: resultToData(res) } : j)))
+      .then((res) => {
+        const data = resultToData(res);
+        setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId ? { ...j, status: "enriching", data } : j));
+        return runJobLookup(jobId, data);
+      })
       .catch((err) => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId ? { ...j, status: "error", error: err.message } : j)));
   };
+  // tweede stap van een foto-job: info opzoeken en in het formulier zetten
+  const runJobLookup = (jobId, data) =>
+    lookupWineFull(data)
+      .then((r) => setPhotoJobs((prev) => prev && prev.map((j) => {
+        if (j.id !== jobId) return j;
+        const cur = j.data || data;
+        return { ...j, status: "done", data: { ...cur, ...enrichPatch(cur, r) } };
+      })))
+      .catch(() => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId ? { ...j, status: "done" } : j)));
   // default: each selected photo is a separate wine
   const onPhotoFiles = async (e) => {
     const files = [...(e.target.files || [])];
@@ -629,20 +755,7 @@ export default function App() {
     setDetail({ ...b, _loading: true, _error: null });
     try {
       const r = await lookupWineFull(b);
-      const patch = {
-        grape: b.grape || r.grape || "",
-        description: r.description || b.description || "",
-        reviews: r.reviews || "",
-        placeName: r.placeName || b.placeName || "",
-        lat: r.lat ?? b.lat ?? "",
-        lng: r.lng ?? b.lng ?? "",
-        retailValue: (b.retailValue !== "" && b.retailValue != null) ? b.retailValue : (r.retailPrice ?? ""),
-        drinkFrom: b.drinkFrom || (r.drinkFrom ?? ""),
-        drinkTo: b.drinkTo || (r.drinkTo ?? ""),
-        score: b.score || (r.score ?? ""),
-        _loading: false, enriched: true,
-      };
-      patchBottle(b.id, patch);
+      patchBottle(b.id, { ...enrichPatch(b, r), _loading: false });
     } catch (e) {
       setDetail((d) => (d && d.id === b.id ? { ...d, _loading: false, _error: e.message } : d));
     }
@@ -751,7 +864,7 @@ export default function App() {
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
         onMultiVintage={(e) => { setBulkInit({ producer: e.producer, name: e.name, region: e.region, country: e.country, color: e.color, grape: e.grape, location: e.location, supplier: e.supplier }); setEdit(null); setShowBulk(true); }} />}
       {importPending && <ImportModal rows={importPending} onApply={applyImport} onCancel={() => setImportPending(null)} />}
-      {photoJobs && <PhotoModal jobs={photoJobs} setJobs={setPhotoJobs} onAdd={addPhotoResult} onAddPhoto={onAddPhotoToJob} onClose={() => setPhotoJobs(null)} />}
+      {photoJobs && <PhotoModal jobs={photoJobs} setJobs={setPhotoJobs} onAdd={addPhotoResult} onAddPhoto={onAddPhotoToJob} onLookup={runJobLookup} onClose={() => setPhotoJobs(null)} />}
       {dupPrompt && <DupModal dp={dupPrompt} onResolve={resolveDup} />}
       {showBulk && <BulkModal initial={bulkInit} onAdd={addBulk} onClose={() => setShowBulk(false)} />}
       {showBackup && <BackupModal text={encodeBackup(bottles)} count={bottles.length} onClose={() => setShowBackup(false)} />}
@@ -960,7 +1073,9 @@ function ImportModal({ rows, onApply, onCancel }) {
 }
 
 // ---------- photo modal ----------
-function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onClose }) {
+// job is nog bezig zolang het etiket gelezen of de info opgezocht wordt
+const busy = (job) => job.status === "pending" || job.status === "enriching";
+function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onClose }) {
   const [queries, setQueries] = useState({});
   const [searching, setSearching] = useState(null);
   const setData = (id, k, v) => setJobs((prev) => prev.map((j) => j.id === id ? { ...j, data: { ...j.data, [k]: v } } : j));
@@ -971,14 +1086,15 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onClose }) {
     setSearching(jobId);
     try {
       const res = await searchWineByName(q);
+      let draft = null;
       setJobs((prev) => prev.map((j) => {
         if (j.id !== jobId) return j;
         const d = resultToData(res);
-        return {
-          ...j, status: "done", error: null,
-          data: { ...d, quantity: j.data?.quantity ?? d.quantity, location: j.data?.location ?? "", purchasePrice: j.data?.purchasePrice ?? "", ownValue: j.data?.ownValue ?? "" },
-        };
+        draft = { ...d, quantity: j.data?.quantity ?? d.quantity, location: j.data?.location ?? "", purchasePrice: j.data?.purchasePrice ?? "", ownValue: j.data?.ownValue ?? "" };
+        return { ...j, status: "enriching", error: null, data: draft };
       }));
+      // meteen ook prijs, drinkvenster en recensies erbij
+      if (draft && onLookup) await onLookup(jobId, draft);
     } catch (e) {
       setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, error: e.message } : j));
     } finally { setSearching(null); }
@@ -1011,25 +1127,33 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onClose }) {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 {job.status === "pending" && (
-                  <div style={S.jobPending}><Loader2 className="spin" size={16} /> Etiket lezen en prijs opzoeken…</div>
+                  <div style={S.jobPending}><Loader2 className="spin" size={16} /> Etiket lezen…</div>
                 )}
-                {job.status !== "pending" && (
+                {job.status === "enriching" && (
+                  <>
+                    <div style={S.jobHead}>
+                      <span style={S.producer}>{job.data?.producer || job.data?.name || "Niet herkend"}</span>
+                    </div>
+                    <div style={{ ...S.jobPending, marginTop: 6 }}><Loader2 className="spin" size={16} /> Prijs, drinkvenster en recensies opzoeken…</div>
+                  </>
+                )}
+                {!busy(job) && (
                   <div style={S.jobHead}>
                     <span style={S.producer}>{job.data?.producer || job.data?.name || "Niet herkend"}</span>
                     {job.data?._confidence && <span style={S.badge}>zekerheid: {job.data._confidence}</span>}
                   </div>
                 )}
                 {job.error && <div style={{ ...S.jobError, marginTop: 6 }}><AlertCircle size={15} /> {job.error}</div>}
-                {job.status !== "pending" && onAddPhoto && (
+                {!busy(job) && onAddPhoto && (
                   <button style={{ ...S.btnGhost, marginTop: 8 }} onClick={() => onAddPhoto(job.id)}>
                     <Camera size={15} /> Foto toevoegen (bv. achterkant)
                   </button>
                 )}
-                {job.status !== "pending" && <SearchRow job={job} />}
+                {!busy(job) && <SearchRow job={job} />}
               </div>
             </div>
 
-            {job.status !== "pending" && job.data && (
+            {!busy(job) && job.data && (
               <>
                 <BottleFields v={job.data} on={(k, v) => setData(job.id, k, v)} />
                 <button style={{ ...S.btnPrimary, marginTop: 4 }} onClick={() => onAdd(job.id)}>
@@ -1319,6 +1443,9 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
           <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 8 }}>
             {b.quantity || 1}× in kelder · totaal {eur(ev.v * (num(b.quantity) || 1))}{ev.fallback ? " (op retail)" : ""}
           </div>
+          {b.priceNote && (
+            <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 4 }}>Retail: {b.priceNote}</div>
+          )}
         </div>
 
         {b.location && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Locatie</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.location}</p></div>}
