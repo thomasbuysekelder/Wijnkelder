@@ -2,7 +2,7 @@
 // Cache-versie: verhoog dit nummer bij elke update; oude caches worden
 // automatisch opgeruimd. Je kelder-data staat in localStorage en wordt
 // hierdoor NOOIT geraakt.
-const CACHE = "kelder-v8";
+const CACHE = "kelder-v9";
 const ASSETS = ["/", "/index.html", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png", "/icon-180.png"];
 
 self.addEventListener("install", (e) => {

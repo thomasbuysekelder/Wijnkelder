@@ -99,7 +99,11 @@ async function vivino(wine) {
         rating: (v.statistics && v.statistics.ratings_average) || null,
         ratings: (v.statistics && v.statistics.ratings_count) || 0,
       };
-    }).filter((o) => o.price && o.currency === "EUR");
+    })
+      // enkel prijzen in EUR tellen mee als prijs; een aanbod zonder EUR-prijs mag
+      // wel blijven voor de Vivino-score (rating + aantal beoordelingen)
+      .map((o) => (o.price && o.currency === "EUR" ? o : { ...o, price: null }))
+      .filter((o) => o.price || (o.rating && o.ratings));
   } catch { return []; }
 }
 

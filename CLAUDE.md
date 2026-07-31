@@ -30,24 +30,50 @@ bewust uit: pushen naar `main` deployt de bestanden zoals ze zijn. Bouw dus alti
 lokaal vóór het committen.
 
 ## Prijsbepaling
-- De foto-analyse zelf zoekt niets op (enkel etiket + kennis van het model); de
-  prijs daaruit is een ruwe schatting die meteen daarna door de opzoeking wordt
-  vervangen.
-- De retailprijs komt uit echte winkelprijzen, niet uit een gok van het model.
-  `/api/search` haalt naast de DuckDuckGo-snippets ook Vivino-aanbiedingen op
+- NOOIT een prijs gokken. Het model mag geen prijs uit eigen kennis geven: niet
+  bij foto-analyse (`analyzePhoto` vraagt geen prijs meer), niet bij zoeken op
+  naam, niet bij `lookupWineFull`. Vindt de opzoeking geen echte prijs, dan blijft
+  de retailwaarde LEEG en staat er "geen prijs gevonden" in `priceNote`.
+- Volgorde in `applyMarketPrice()`: (1) Vivino-marktprijs voor exact deze
+  jaargang, (2) Vivino-marktprijs van naburige jaargangen ("ter indicatie"),
+  (3) een bedrag dat het model LETTERLIJK uit de zoeksnippets haalt, mét bron
+  (`priceSource`; zonder bron telt het niet), (4) niets → leeg.
+- `/api/search` haalt naast de DuckDuckGo-snippets ook Vivino-aanbiedingen op
   (EUR, markt BE, per jaargang); `marketPrice()` in `app.jsx` kiest de exacte
   jaargang, anders naburige jaargangen, en negeert andere flesformaten.
 - Vivino is een NIET-OFFICIËLE bron (ongedocumenteerd endpoint) en wordt hier
   enkel voor persoonlijk gebruik aangesproken. Bij commercialisering van deze app
   moet die bron vervangen worden door een officiële databron met licentie.
 - Vivino is een extra bovenop de snippets, geen vereiste: valt de bron weg of
-  geeft ze niets terug, dan blijft alles werken op de snippets en de kennis van
-  het model, met "schatting" in `priceNote`.
+  geeft ze niets terug, dan blijven de snippets werken en blijft de prijs anders
+  gewoon leeg.
 - Waar de prijs op steunt, staat altijd in `priceNote` en is zichtbaar op de
-  detailkaart. Een nieuwe opzoeking mag de retailprijs overschrijven (anders kan
-  je een foute prijs nooit corrigeren); `ownValue` en `purchasePrice` niet.
+  detailkaart. Een nieuwe opzoeking mag de prijs van een vorige opzoeking
+  overschrijven (anders kan je een foute prijs nooit corrigeren), maar NOOIT een
+  zelf ingetikte waarde: die krijgt `priceManual: true` via `fieldPatch()`.
+  `ownValue` en `purchasePrice` blijven sowieso onaangeroerd.
 - DuckDuckGo beantwoordt GET-verzoeken vanaf een server met een lege pagina
   (HTTP 202). `/api/search` moet dus met POST zoeken.
+
+## Recensies
+- Nooit een recensie, citaat of score verzinnen. Enkel wat in de zoekresultaten
+  staat. Is er niets, dan zegt de app dat: "Geen recensie gevonden."
+- Staat er niets voor de exacte jaargang, dan mag een recensie van een andere
+  jaargang van dezelfde wijn, maar verplicht met vermelding: "Recensie van
+  jaargang JAAR, ter indicatie:". `score` blijft dan leeg (die geldt enkel voor
+  de eigen jaargang).
+- De Vivino-score wordt in code toegevoegd door `applyReviews()`/`vivinoLine()`,
+  met aantal beoordelingen en jaargang; het model mag Vivino niet zelf vermelden,
+  zo kan het cijfer niet verzonnen worden.
+
+## Vraag de sommelier
+- Knop in de kop opent `SommelierModal`: vrije vragen over de eigen kelder.
+- `cellarContext()` stuurt de hele kelder compact mee (één regel per wijn),
+  begrensd op 30.000 tekens: eerst vallen de proefnotities weg, daarna de laatste
+  wijnen (dat wordt in het antwoord gemeld). Eén vraag blijft zo rond 1 à 2 cent.
+- Eén Haiku-call zonder tools, max_tokens 900. Een vervolgvraag stuurt de laatste
+  twee beurten beknopt mee (antwoord afgekapt op 600 tekens).
+- Het model mag enkel flessen uit de meegestuurde lijst aanbevelen.
 
 ## Kostenregels (belangrijk voor de eigenaar)
 - ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit
