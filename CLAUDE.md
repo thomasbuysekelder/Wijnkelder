@@ -110,6 +110,9 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   blijft even groot: de kop schoof weg en de knoppenbalk verdween onder de toetsen.
   `useZichtbareHoogte()` meet `window.visualViewport` en zet `--vvh` en `--vvtop`.
   Meet je een venster in `vh`, dan doe je het fout — gebruik `var(--vvh)`.
+- Een venster hangt aan de BOVENKANT van dat zichtbare scherm, dus daar begint ook
+  de statusbalk. `Overlay` houdt `env(safe-area-inset-top)` vrij; zonder dat loopt
+  de titel onder de klok en de notch.
 
 ## Opmaak van het startscherm
 - Boven het cijferblok staat één regel "N flessen · M wijnen" met rechts de knop om
@@ -173,7 +176,10 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   prijs/algemeen en één gericht op recensies en proefnotities. Het model vat die
   tweede samen in 2 à 3 zinnen met bronvermelding. Beide zijn gratis; er gaat nog
   altijd maar één Haiku-call overheen.
-- De Vivino-score is een AANVULLING op die tekst, nooit de hele inhoud.
+- De Vivino-score is een AANVULLING op die tekst, nooit de hele inhoud. Is er geen
+  enkele recensie gevonden, dan begint het veld met "Geen recensie gevonden." en
+  komt het cijfer daarachter — anders leest een gemiddelde van duizenden
+  gebruikers als een proefnotitie.
 - Staat er niets voor de exacte jaargang, dan mag een recensie van een andere
   jaargang van dezelfde wijn, maar verplicht met vermelding: "Recensie van
   jaargang JAAR, ter indicatie:". `score` blijft dan leeg (die geldt enkel voor

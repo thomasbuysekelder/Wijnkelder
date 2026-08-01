@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v54";
+const APP_VERSION = "kelder-v55";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1011,7 +1011,10 @@ function applyReviews(res, vr) {
   const cur = String(res.reviews || "").trim();
   const none = !cur || /geen recensie/i.test(cur);
   if (!line) { res.reviews = none ? "Geen recensie gevonden." : cur; return res; }
-  res.reviews = none ? line : `${cur} ${line}`;
+  // Het Vivino-cijfer is een AANVULLING, nooit de hele inhoud. Is er geen enkele
+  // recensie gevonden, dan moet dat er ook staan; anders lijkt een gemiddelde van
+  // duizenden gebruikers op een proefnotitie.
+  res.reviews = none ? `Geen recensie gevonden. ${line}` : `${cur} ${line}`;
   return res;
 }
 
@@ -2415,7 +2418,14 @@ function Overlay({ children, onClose, small, wide, full }) {
     : { ...S.modal, maxWidth: small ? 440 : wide ? 720 : 620 };
   const buiten = (e) => { if (e.target === e.currentTarget) onClose(); };
   return (
-    <div style={{ ...S.overlay, padding: full ? 8 : 16 }} onPointerDown={buiten} onClick={buiten}>
+    <div
+      style={{
+        ...S.overlay,
+        paddingTop: `calc(env(safe-area-inset-top) + ${full ? 8 : 16}px)`,
+        paddingBottom: `calc(env(safe-area-inset-bottom) + ${full ? 8 : 16}px)`,
+        paddingLeft: full ? 8 : 16, paddingRight: full ? 8 : 16,
+      }}
+      onPointerDown={buiten} onClick={buiten}>
       <div className="modalcard" style={box}>
         {children}
       </div>
@@ -3711,7 +3721,7 @@ const S = {
   modalFull: {
     maxWidth: 940, height: "100%", maxHeight: "100%",
     overflow: "hidden", display: "flex", flexDirection: "column",
-    padding: "18px 18px calc(14px + env(safe-area-inset-bottom))",
+    padding: "18px 18px 14px",
   },
   modalHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 18 },
   modalTitle: { fontFamily: "'Spectral',serif", fontSize: 21, fontWeight: 600, margin: 0, letterSpacing: 0.2 },
