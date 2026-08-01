@@ -94,6 +94,16 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   een render). React gooit het invoerveld dan bij elke toetsaanslag weg en je kan
   maar één letter tegelijk typen. `ZoekRij` staat daarom op modulehoogte.
 
+## Opmaak van de detailkaart
+- De kaart is een schermvullend venster: kop en knoppenbalk staan VAST, alleen het
+  middenstuk schuift (`S.detailBody`). "Bewerken" moet altijd bereikbaar zijn zonder
+  te scrollen — zet er dus nooit een knoppenbalk in die meeschuift.
+- Onderaan staan drie knoppen die de breedte delen (`S.detailFoot`, grid 1fr 1fr 1fr).
+  Laat ze niet wikkelen: een halve rij met één knop ziet er rommelig uit.
+- Elk blok is een `Vak` met hetzelfde opschrift en dezelfde afstand. Korte kenmerken
+  zijn chips van gelijke hoogte; lange waarden (druif, streek) zijn `Feit`-rijen met
+  een label links. Zet nooit een lange tekst in een chip: die neemt dan een hele rij.
+
 ## Kaart
 - De knop "Kaart" in de kop toont alle flessen die een `lat`/`lng` hebben op een
   echte kaart (`KaartModal`). Flessen die nog geen locatie hebben, worden geteld

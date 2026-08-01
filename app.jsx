@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v50";
+const APP_VERSION = "kelder-v51";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1506,10 +1506,12 @@ export default function App() {
       if (fTodo === "geenNotitie" && String(b.tasteNotes || "").trim()) return false;
       if (fTodo === "herproef" && !(num(b.herproefOp) && num(b.herproefOp) <= NOW)) return false;
       if (query) {
-        const q = query.toLowerCase();
-        const hay = [b.producer, b.name, b.region, b.country, b.location, b.vintage, b.supplier]
-          .join(" ").toLowerCase();
-        if (!hay.includes(q)) return false;
+        // elk woord apart zoeken, en zonder accenten: "soldera 2019" en "rose"
+        // vonden vroeger niets omdat er op de hele zin ineens gezocht werd
+        const plat = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+        const hay = plat([b.producer, b.name, b.region, b.country, b.location, b.vintage, b.supplier, b.grape, b.tasteNotes].join(" "));
+        const woorden = plat(query).split(/\s+/).filter(Boolean);
+        if (!woorden.every((w) => hay.includes(w))) return false;
       }
       return true;
     });
@@ -3130,6 +3132,25 @@ function RestoreModal({ onRestore, onClose }) {
 }
 
 // ---------- detail card ----------
+function Feit({ label, waarde, sc, laatste }) {
+  if (!waarde) return null;
+  return (
+    <div style={{ ...S.feitRij, ...(laatste ? { borderBottom: "none" } : null) }}>
+      <span style={{ ...S.feitLabel, fontSize: sc(11) }}>{label}</span>
+      <span style={{ ...S.feitWaarde, fontSize: sc(14) }}>{waarde}</span>
+    </div>
+  );
+}
+
+function Vak({ titel, sc, children, rand }) {
+  return (
+    <section style={{ ...S.vak, ...(rand ? S.vakRand : null) }}>
+      {titel && <h4 style={{ ...S.sectionLabel, fontSize: sc(11), marginBottom: 10 }}>{titel}</h4>}
+      {children}
+    </section>
+  );
+}
+
 function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onGedronken, onProeven }) {
   const sc = (px) => Math.round(px * scale);
   const st = drinkStatus(b);
@@ -3139,25 +3160,25 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
   const lat = num(b.lat), lng = num(b.lng);
   const hasCoords = lat !== 0 && lng !== 0;
   const osmLink = hasCoords ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=9/${lat}/${lng}` : null;
-
-
   const dot = { rood: "#7B1E2B", wit: "#D9C97A", "rosé": "#E1A0A6", mousserend: "#E7D9A0", versterkt: "#8A4B24", oranje: "#C77D2E" }[b.color] || "#7B1E2B";
 
   return (
-    <Overlay onClose={onClose} wide>
+    <Overlay onClose={onClose} full>
+      {/* De kop en de knoppenbalk blijven staan; enkel het middenstuk schuift.
+          Zo staat "Bewerken" altijd binnen handbereik. */}
       <div style={S.modalHead}>
         <div style={{ minWidth: 0 }}>
           <div style={S.rowTop}>
             <span style={{ ...S.colorDot, background: dot, width: 9, height: 9 }} />
-            <h3 style={{ ...S.modalTitle, fontSize: sc(21) }}>{b.producer || b.name || "Wijn"}</h3>
+            <h3 style={{ ...S.modalTitle, fontSize: sc(20) }}>{b.name || b.producer || "Wijn"}</h3>
             {b.vintage && <span style={{ ...S.vintage, fontSize: sc(15) }}>{b.vintage}</span>}
           </div>
-          {b.producer && b.name && <div style={{ ...S.rowSub, fontSize: sc(13), marginTop: 2 }}>{b.name}</div>}
+          {b.producer && b.name && <div style={{ ...S.rowSub, fontSize: sc(13), marginTop: 3 }}>{b.producer}</div>}
         </div>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
       </div>
 
-      <div style={{ maxHeight: "72vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={S.detailBody}>
         {b.imageUrl && (
           <div style={{ display: "flex", justifyContent: "center" }}>
             <img src={b.imageUrl} alt="etiket" style={S.etiket}
@@ -3165,26 +3186,32 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
           </div>
         )}
         {b.verifyNote && (
-          <div style={{ ...S.jobError, color: "var(--amber)", padding: "10px 13px", fontSize: sc(13), background: "rgba(210,160,73,.08)", border: "1px solid rgba(210,160,73,.3)", borderRadius: 10, alignItems: "flex-start" }}>
+          <div style={{ ...S.waarschuwing, fontSize: sc(13) }}>
             <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 2 }} /> <span>{b.verifyNote}</span>
           </div>
         )}
 
-        {/* chips */}
+        {/* korte kenmerken als gelijke labels; lange waarden als feitenrijen,
+            zodat er geen enkele reuzenchip meer over een rij valt */}
         <div style={S.chips}>
           <span style={{ ...S.chip, fontSize: sc(12) }}>{b.color}</span>
           {formaatKort(b.volumeMl) && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold-dim)" }}>{formaatLabel(b.volumeMl)}</span>}
-          {b.grape && <span style={{ ...S.chip, fontSize: sc(12) }}>{b.grape}</span>}
-          {(b.region || b.country) && <span style={{ ...S.chip, fontSize: sc(12) }}>{[b.region, b.country].filter(Boolean).join(", ")}</span>}
           {b.score && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold)" }}>{b.score}</span>}
           <span style={{ ...S.chip, fontSize: sc(12), color: st.color, borderColor: st.color }}>{st.label}</span>
           {b.buitenKelder && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold-dim)" }}>elders gedronken</span>}
         </div>
 
-        {/* drink window */}
+        {(b.grape || b.region || b.country || b.location || b.supplier) && (
+          <Vak sc={sc} rand>
+            <Feit label="Druif" waarde={b.grape} sc={sc} />
+            <Feit label="Streek" waarde={[b.region, b.country].filter(Boolean).join(", ")} sc={sc} />
+            <Feit label="In kelder" waarde={b.location} sc={sc} />
+            <Feit label="Gekocht bij" waarde={b.supplier} sc={sc} laatste />
+          </Vak>
+        )}
+
         {(b.drinkFrom || b.drinkTo) && (
-          <div>
-            <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Drinkvenster</div>
+          <Vak titel="Drinkvenster" sc={sc}>
             {mat !== null ? (
               <>
                 <div style={{ ...S.matTrack, maxWidth: "100%", height: 6 }}><div style={{ ...S.matNow, left: `${mat * 100}%`, height: 12, top: -3 }} /></div>
@@ -3197,12 +3224,10 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
             ) : (
               <p style={{ ...S.bodyText, fontSize: sc(14) }}>{[b.drinkFrom, b.drinkTo].filter(Boolean).join(" – ")} <span style={{ color: st.color }}>· {st.label}</span></p>
             )}
-          </div>
+          </Vak>
         )}
 
-        {/* where made */}
-        <div>
-          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Waar gemaakt</div>
+        <Vak titel="Waar gemaakt" sc={sc}>
           {hasCoords ? (
             <a href={osmLink} target="_blank" rel="noreferrer" style={S.mapPanel}>
               <MapPin size={22} strokeWidth={1.6} style={{ color: "var(--wine-bright)", flexShrink: 0 }} />
@@ -3216,26 +3241,23 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
           ) : (
             <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}>Tik onderaan op 'Vernieuwen' voor locatie, recensies en actuele prijs.</div>
           )}
-        </div>
+        </Vak>
 
-        {/* description + reviews */}
-        <div>
-          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Beschrijving</div>
+        <Vak titel="Beschrijving" sc={sc}>
           {b._loading && !b.description ? (
             <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}><Loader2 className="spin" size={16} /> Info ophalen…</div>
           ) : (
             <p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.description || "Tik onderaan op 'Vernieuwen' voor een beschrijving van deze jaargang."}</p>
           )}
-        </div>
-        <div>
-          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Recente recensies</div>
+        </Vak>
+
+        <Vak titel="Recente recensies" sc={sc}>
           <p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.reviews || (b._loading ? "…" : "Nog niet opgezocht.")}</p>
-        </div>
+        </Vak>
+
         {b._error && <div style={{ ...S.jobError, fontSize: sc(13) }}><AlertCircle size={15} /> {b._error}</div>}
 
-        {/* values */}
-        <div>
-          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Waarde per fles</div>
+        <Vak titel="Waarde per fles" sc={sc}>
           <div style={S.valGrid}>
             <ValCell label="Aankoop" sc={sc}
               bewerk={<DirectVeld waarde={b.purchasePrice} getal placeholder="—" sc={sc}
@@ -3248,7 +3270,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
               bewerk={<DirectVeld waarde={b.ownValue} getal placeholder="—" sc={sc}
                 onKlaar={(v) => onPatch && onPatch({ ownValue: v })} />} />
           </div>
-          <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 8 }}>
+          <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 10 }}>
             {b.buitenKelder
               ? "Deze fles lag niet in je kelder; ze staat er voor het logboek."
               : `${b.quantity || 1}× in kelder · totaal ${eur(ev.v * (num(b.quantity) || 1))}${ev.fallback ? " (op retail)" : ""}`}
@@ -3263,24 +3285,26 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
               )}
             </div>
           )}
-        </div>
+        </Vak>
 
-        {b.location && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Locatie</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.location}</p></div>}
-        <div>
-          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Mijn proefnotities</div>
+        <Vak titel="Mijn proefnotities" sc={sc}>
           <DirectVeld waarde={b.tasteNotes} onKlaar={(v) => onPatch && onPatch({ tasteNotes: v })}
             meerregelig placeholder="Kleur, neus, smaak, evolutie… (wordt vanzelf bewaard)" sc={sc} />
           {onProeven && (
-            <button style={{ ...S.btnGhost, marginTop: 8, width: "100%", justifyContent: "center" }} onClick={onProeven}>
+            <button style={{ ...S.btnGhost, marginTop: 10, width: "100%" }} onClick={onProeven}>
               <Check size={15} /> Proeven met het draaiboek
             </button>
           )}
-        </div>
-        {b.notes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Notities</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p></div>}
+        </Vak>
+
+        {b.notes && (
+          <Vak titel="Notities" sc={sc}>
+            <p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p>
+          </Vak>
+        )}
 
         {(log.length > 0 || num(b.herproefOp) > 0) && (
-          <div>
-            <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Logboek</div>
+          <Vak titel="Logboek" sc={sc}>
             {num(b.herproefOp) > 0 && (
               <p style={{ ...S.bodyText, fontSize: sc(13), color: num(b.herproefOp) <= NOW ? "var(--gold)" : "var(--ink-dim)" }}>
                 {num(b.herproefOp) <= NOW ? `Klaar om opnieuw te proeven (sinds ${b.herproefOp}).` : `Opnieuw proeven vanaf ${b.herproefOp}.`}
@@ -3300,22 +3324,22 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
                 })}
               </div>
             ))}
-          </div>
+          </Vak>
         )}
 
         <WineChat b={b} sc={sc} />
       </div>
 
-      <div style={S.modalFoot}>
-        {onGedronken && (num(b.quantity) || 0) > 0 && (
-          <button style={{ ...S.btnGhost, borderColor: "var(--wine-bright)", color: "var(--ink)" }} onClick={onGedronken}>
-            <Wine size={15} /> Fles weg
-          </button>
-        )}
-        <button style={S.btnGhost} onClick={onEnrich} disabled={b._loading}>
+      {/* drie knoppen die de breedte delen: geen afgebroken rij meer */}
+      <div style={S.detailFoot}>
+        <button style={{ ...S.voetKnop, ...(num(b.quantity) > 0 ? null : { opacity: 0.4 }) }}
+          onClick={onGedronken} disabled={!onGedronken || !(num(b.quantity) > 0)}>
+          <Wine size={15} /> Fles weg
+        </button>
+        <button style={S.voetKnop} onClick={onEnrich} disabled={b._loading}>
           {b._loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} Vernieuwen
         </button>
-        <button style={S.btnPrimary} onClick={onEdit}><Pencil size={15} /> Bewerken</button>
+        <button style={{ ...S.voetKnop, ...S.voetKnopPrimair }} onClick={onEdit}><Pencil size={15} /> Bewerken</button>
       </div>
     </Overlay>
   );
@@ -3366,16 +3390,18 @@ function WineChat({ b, sc }) {
       )}
       {busy && <div style={{ ...S.jobPending, padding: "6px 0" }}><Loader2 className="spin" size={16} /> De sommelier zoekt het op…</div>}
       {err && <div style={{ ...S.jobError, padding: "6px 0" }}><AlertCircle size={15} /> {err}</div>}
-      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+      {/* veld en knop onder elkaar en over de volle breedte: naast elkaar werd
+          het veld te smal en stond de knop scheef */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <textarea
-          style={{ ...S.input, flex: 1, minHeight: 74, maxHeight: 180, resize: "vertical", lineHeight: 1.5 }}
+          style={{ ...S.input, width: "100%", minHeight: 74, maxHeight: 180, resize: "vertical", lineHeight: 1.5 }}
           rows={3}
           placeholder={thread.length ? "Nog een vraag over deze fles…" : "Bv. wat maakt deze wijn bijzonder?"}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-        <button style={{ ...S.btnPrimary, height: 46 }} onClick={() => send()} disabled={busy || !q.trim()}>
-          {busy ? <Loader2 className="spin" size={15} /> : <Send size={15} />} Vraag
+        <button style={{ ...S.btnPrimary, height: 44, width: "100%" }} onClick={() => send()} disabled={busy || !q.trim()}>
+          {busy ? <Loader2 className="spin" size={15} /> : <Send size={15} />} Vraag het de sommelier
         </button>
       </div>
     </div>
@@ -3596,8 +3622,8 @@ const S = {
   chipKeuzeRij: { display: "flex", flexWrap: "wrap", gap: 6 },
   chipKeuze: { background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "7px 11px", borderRadius: 999, fontSize: 13.5, cursor: "pointer", lineHeight: 1.2 },
   chipKeuzeAan: { background: "rgba(123,30,43,.35)", borderColor: "var(--wine-bright)", color: "var(--ink)", fontWeight: 600 },
-  chips: { display: "flex", flexWrap: "wrap", gap: 7 },
-  chip: { fontSize: 12, border: "1px solid var(--line2)", color: "var(--ink2)", padding: "4px 11px", borderRadius: 20, background: "var(--bg2)", textTransform: "capitalize", letterSpacing: 0.2 },
+  chips: { display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" },
+  chip: { display: "inline-flex", alignItems: "center", height: 28, fontSize: 12, border: "1px solid var(--line2)", color: "var(--ink2)", padding: "0 12px", borderRadius: 20, background: "var(--bg2)", textTransform: "capitalize", letterSpacing: 0.2, whiteSpace: "nowrap" },
   sectionLabel: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 1.4, color: "var(--gold-dim)", marginBottom: 8, fontWeight: 600 },
   bottleImg: { width: 78, height: 130, objectFit: "cover", borderRadius: 10, border: "1px solid var(--line2)", background: "var(--bg)", flexShrink: 0 },
   map: { width: "100%", height: 210, border: "1px solid var(--line2)", borderRadius: 12, background: "var(--bg)", display: "block", objectFit: "cover", cursor: "pointer" },
@@ -3605,6 +3631,20 @@ const S = {
   mapPanel: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, textDecoration: "none", cursor: "pointer" },
   mapLink: { display: "inline-flex", alignItems: "center", gap: 4, color: "var(--gold)", fontSize: 12, textDecoration: "none", whiteSpace: "nowrap" },
   mapCaption: { fontSize: 12, color: "var(--ink-dim)" },
+  // Detailkaart: kop en knoppenbalk staan vast, alleen het midden schuift.
+  detailBody: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, paddingRight: 2 },
+  detailFoot: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--line)" },
+  voetKnop: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 0, height: 44, padding: "0 8px", borderRadius: 11, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", fontSize: 13.5, fontWeight: 500, cursor: "pointer" },
+  voetKnopPrimair: { background: "linear-gradient(180deg, var(--wine-bright), var(--wine))", borderColor: "var(--wine-bright)", color: "#fff", fontWeight: 600 },
+
+  // Eén vorm voor elk blok op de kaart, zodat alles dezelfde ritme houdt.
+  vak: { display: "flex", flexDirection: "column" },
+  vakRand: { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: "4px 13px" },
+  feitRij: { display: "flex", gap: 12, alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--bg3)" },
+  feitLabel: { flex: "0 0 88px", textTransform: "uppercase", letterSpacing: 1, color: "var(--ink-dim)", fontWeight: 600 },
+  feitWaarde: { flex: 1, minWidth: 0, color: "var(--ink)", lineHeight: 1.45 },
+  waarschuwing: { display: "flex", gap: 8, alignItems: "flex-start", color: "var(--amber)", padding: "10px 13px", background: "rgba(210,160,73,.08)", border: "1px solid rgba(210,160,73,.3)", borderRadius: 10 },
+
   verkenRij: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" },
   verkenKnop: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, flex: "1 1 108px", minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", height: 40, borderRadius: 10, fontSize: 13.5, fontWeight: 500, cursor: "pointer" },
   logTellers: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9 },
