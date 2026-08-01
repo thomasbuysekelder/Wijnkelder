@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v37";
+const APP_VERSION = "kelder-v38";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -324,12 +324,12 @@ const SEARCH_URL = "/api/search";
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
 // De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
 // verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
-async function fetchSearch({ query, wine, wiki, pages, term, prefix = "", max = 2600 }) {
+async function fetchSearch({ query, wine, wiki, pages, term, geo, prefix = "", max = 2600 }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, wine, wiki, pages, term }),
+      body: JSON.stringify({ query, wine, wiki, pages, term, geo }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
@@ -340,6 +340,7 @@ async function fetchSearch({ query, wine, wiki, pages, term, prefix = "", max = 
       wiki: (data && data.wiki) || null,
       rates: (data && data.rates) || null,
       pagePrices: (data && data.pagePrices) || [],
+      geo: (data && data.geo) || null,
       sources: (data && data.sources) || {},
     };
   } catch { return { text: "", items: [], offers: [], wiki: null, sources: { web: "fout", vivino: "fout" } }; }
@@ -634,9 +635,7 @@ async function lookupWineFull(b) {
   "reviews": "2 à 3 zinnen samenvatting van wat proevers en recensenten over deze wijn schrijven, in het Nederlands, met de bronnaam erbij; gaat het over een andere jaargang, begin dan met 'Recensie van jaargang JAAR, ter indicatie:'; is er niets, schrijf dan exact 'Geen recensie gevonden.'",
   "region": "streek/appellation VOLGENS DE ZOEKRESULTATEN; laat leeg als je het daar niet terugvindt",
   "country": "land VOLGENS DE ZOEKRESULTATEN; laat leeg als je het daar niet terugvindt",
-  "placeName": "plaats waar de wijn gemaakt wordt (domein, streek, land)",
-  "lat": breedtegraad als getal,
-  "lng": lengtegraad als getal
+  "placeName": "plaats waar de wijn gemaakt wordt (domein, streek, land)"
 }`;
   // De streek NIET als vaststaand feit meegeven: komt ze uit een eerdere
   // etiketlezing, dan is ze mogelijk fout en herhaalt het model die fout eindeloos.
@@ -751,6 +750,14 @@ async function lookupWineFull(b) {
   // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
   const herkomst = vivinoOrigin(offers, b);
   if (herkomst && herkomst.country) { res.region = herkomst.region || res.region; res.country = herkomst.country; }
+  // Coördinaten uit een echte geocoder in plaats van uit het model: zo krijgt elke
+  // jaargang van dezelfde wijn hetzelfde punt, en klopt het ook nog.
+  const plek = [res.region || b.region, res.country || b.country].filter(Boolean).join(", ");
+  const g = plek ? (await fetchSearch({ geo: plek })).geo : null;
+  res.lat = g ? g.lat : "";
+  res.lng = g ? g.lng : "";
+  if (g && !res.placeName) res.placeName = plek;
+
   // Gaven de webbronnen niets terug, dan is er niets geverifieerd: dat moet je
   // kunnen zien, anders blijft een gok van de etiketlezing er staan als feit.
   const webBron = main.sources.webBron || "de webzoekopdracht";
@@ -1268,6 +1275,14 @@ export default function App() {
   const addBulk = (shared, rows, metOpzoeken) => {
     let list = bottles, added = 0, merged = 0;
     const nieuwe = [];
+    // Laat je aankoopprijs of winkel leeg, dan neem je over wat je bij de eerste
+    // ingevulde jaargang zette — anders moet je hetzelfde telkens opnieuw tikken.
+    const eersteMet = (veld) => {
+      const r = rows.find((x) => String(x[veld] ?? "").trim());
+      return r ? String(r[veld]).trim() : "";
+    };
+    const valPrijs = eersteMet("purchasePrice") || shared.purchasePrice || "";
+    const valWinkel = eersteMet("supplier") || shared.supplier || "";
     rows.forEach((row) => {
       const vintage = String(row.vintage || "").trim();
       const qty = String(row.quantity || "1");
@@ -1276,8 +1291,8 @@ export default function App() {
         ...cleanBottle(shared), vintage, quantity: qty,
         color: String(shared.color || "rood").toLowerCase(),
         volumeMl: num(row.volumeMl) || 750,
-        purchasePrice: String(row.purchasePrice ?? "").trim() || shared.purchasePrice || "",
-        supplier: String(row.supplier ?? "").trim() || shared.supplier || "",
+        purchasePrice: String(row.purchasePrice ?? "").trim() || valPrijs,
+        supplier: String(row.supplier ?? "").trim() || valWinkel,
       };
       const existing = findDuplicate(list, b);
       if (existing) { list = list.map((x) => x.id === existing.id ? { ...x, quantity: String((num(x.quantity) || 0) + (num(qty) || 0)) } : x); merged++; }
@@ -1599,7 +1614,8 @@ export default function App() {
       {/* ---- modals ---- */}
       {detail && <DetailModal b={detail} scale={scale} onClose={() => setDetail(null)}
         onEdit={() => { setEdit(detail); setDetail(null); }}
-        onEnrich={() => enrichDetail(detail)} onSave={updateBottle} />}
+        onEnrich={() => enrichDetail(detail)} onSave={updateBottle}
+        onPatch={(patch) => patchBottle(detail.id, patch)} />}
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
         onMultiVintage={(e) => { setBulkInit({ producer: e.producer, name: e.name, region: e.region, country: e.country, color: e.color, grape: e.grape, location: e.location, supplier: e.supplier }); setEdit(null); setShowBulk(true); }} />}
       {importPending && <ImportModal rows={importPending} onApply={applyImport} onCancel={() => setImportPending(null)} />}
@@ -1667,7 +1683,12 @@ function Row({ b, scale, onOpen, onDelete }) {
         ) : (b.drinkFrom || b.drinkTo) ? (
           <div style={{ ...S.matYears, maxWidth: "100%", fontSize: sc(11), marginTop: sc(5) }}><span>drinkvenster {[b.drinkFrom, b.drinkTo].filter(Boolean).join(" – ")}</span></div>
         ) : null}
-        {b.location && <div style={{ ...S.loc, fontSize: sc(11), marginTop: sc(4) }}>📍 {b.location}</div>}
+        <div style={{ ...S.loc, fontSize: sc(11), marginTop: sc(4), display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {b.location && <span>📍 {b.location}</span>}
+          {money(b.purchasePrice) > 0
+            ? <span>aankoop {eur(money(b.purchasePrice))}</span>
+            : <span style={{ color: "var(--amber)" }}>aankoop niet ingevuld</span>}
+        </div>
       </div>
       <button className="iconbtn" style={{ ...S.iconBtn, alignSelf: "flex-start" }} onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={14} /></button>
     </div>
@@ -1903,6 +1924,11 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
                     <Camera size={15} /> Foto toevoegen (bv. achterkant)
                   </button>
                 )}
+                {!busy(job) && onMultiVintage && (job.data?.producer || job.data?.name) && (
+                  <button style={{ ...S.btnGhost, marginTop: 8 }} onClick={() => onMultiVintage(job.data)}>
+                    <Layers size={15} /> Meerdere jaargangen van deze wijn
+                  </button>
+                )}
                 {!busy(job) && <SearchRow job={job} />}
               </div>
             </div>
@@ -1910,16 +1936,9 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
             {!busy(job) && job.data && (
               <>
                 <BottleFields v={job.data} on={(k, v) => setData(job.id, k, v)} />
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                  <button style={S.btnPrimary} onClick={() => onAdd(job.id)}>
-                    <Check size={15} /> Toevoegen aan kelder
-                  </button>
-                  {onMultiVintage && (job.data.producer || job.data.name) && (
-                    <button style={S.btnGhost} onClick={() => onMultiVintage(job.data)}>
-                      <Layers size={15} /> Meerdere jaargangen van deze wijn
-                    </button>
-                  )}
-                </div>
+                <button style={{ ...S.btnPrimary, marginTop: 4 }} onClick={() => onAdd(job.id)}>
+                  <Check size={15} /> Toevoegen aan kelder
+                </button>
               </>
             )}
           </div>
@@ -2038,32 +2057,34 @@ function BulkModal({ initial, onAdd, onClose }) {
         <div style={{ ...S.sectionLabel, marginTop: 6 }}>Jaargangen</div>
         {rows.map((r, i) => (
           <div key={i} style={S.bulkRij}>
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-              <label style={{ ...S.field, flex: 1, minWidth: 90 }}>
-                <span style={S.fieldLabel}>Jaargang</span>
-                <input style={S.input} placeholder="bv. 2018" value={r.vintage} onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <label style={{ ...S.field, flex: "0 0 92px", minWidth: 0 }}>
+                {i === 0 && <span style={S.fieldLabel}>Jaargang</span>}
+                <input style={S.input} placeholder="2018" value={r.vintage} onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
               </label>
-              <div style={{ ...S.field, flex: "0 0 auto" }}>
-                <span style={S.fieldLabel}>Aantal</span>
-                <QtyStepper value={r.quantity} onChange={(v) => setRow(i, "quantity", v)} />
-              </div>
-              <button style={{ ...S.iconBtn, marginBottom: 2 }} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <label style={{ ...S.field, flex: 1.2, minWidth: 130 }}>
-                <span style={S.fieldLabel}>Formaat</span>
+              <label style={{ ...S.field, flex: 1, minWidth: 0 }}>
+                {i === 0 && <span style={S.fieldLabel}>Formaat</span>}
                 <select style={S.input} value={num(r.volumeMl) || 750} onChange={(e) => setRow(i, "volumeMl", parseInt(e.target.value))}>
                   {FORMATEN.map((f) => <option key={f.ml} value={f.ml}>{f.label}</option>)}
                 </select>
               </label>
-              <label style={{ ...S.field, flex: 1, minWidth: 110 }}>
-                <span style={S.fieldLabel}>Aankoopprijs (€/fles)</span>
+              <div style={{ ...S.field, flex: "0 0 auto" }}>
+                {i === 0 && <span style={S.fieldLabel}>Aantal</span>}
+                <QtyStepper value={r.quantity} onChange={(v) => setRow(i, "quantity", v)} />
+              </div>
+              <button style={{ ...S.iconBtn, marginBottom: 2 }} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <label style={{ ...S.field, flex: "0 0 92px", minWidth: 0 }}>
+                {i === 0 && <span style={S.fieldLabel}>Aankoop €</span>}
                 <input style={S.input} type="number" inputMode="decimal" value={r.purchasePrice}
+                  placeholder={i > 0 ? (rows[0].purchasePrice || "") : ""}
                   onChange={(e) => setRow(i, "purchasePrice", e.target.value)} />
               </label>
-              <label style={{ ...S.field, flex: 1.3, minWidth: 130 }}>
-                <span style={S.fieldLabel}>Waar gekocht</span>
-                <input style={S.input} value={r.supplier} placeholder={shared.supplier || "leverancier"}
+              <label style={{ ...S.field, flex: 1, minWidth: 0 }}>
+                {i === 0 && <span style={S.fieldLabel}>Waar gekocht</span>}
+                <input style={S.input} value={r.supplier}
+                  placeholder={i > 0 ? (rows[0].supplier || shared.supplier || "zelfde als hierboven") : (shared.supplier || "leverancier")}
                   onChange={(e) => setRow(i, "supplier", e.target.value)} />
               </label>
             </div>
@@ -2276,7 +2297,7 @@ function RestoreModal({ onRestore, onClose }) {
 }
 
 // ---------- detail card ----------
-function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
+function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch }) {
   const sc = (px) => Math.round(px * scale);
   const st = drinkStatus(b);
   const ev = effVal(b);
@@ -2375,14 +2396,14 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
         <div>
           <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Waarde per fles</div>
           <div style={S.valGrid}>
-            <ValCell label="Aankoop" value={money(b.purchasePrice) > 0 ? eur(money(b.purchasePrice)) : "—"} sc={sc} />
+            <ValCell label="Aankoop" sc={sc}
+              bewerk={<DirectVeld waarde={b.purchasePrice} getal placeholder="—" sc={sc}
+                onKlaar={(v) => onPatch && onPatch({ purchasePrice: v })} />} />
             <ValCell label="Retail" value={money(b.retailValue) > 0 ? eur(money(b.retailValue)) : "—"} sub={money(b.retailValue) > 0 ? "incl. btw" : ""} sc={sc} />
-            <ValCell
-              label="Eigen schatting"
-              value={ev.empty ? (ev.fallback ? `${eur(ev.v)}*` : "—") : eur(ev.v)}
-              sub={ev.fallback ? "niet ingevuld · retail" : ev.empty ? "" : "eigen waarde"}
-              muted={ev.fallback}
-              sc={sc} />
+            <ValCell label="Eigen schatting" sc={sc}
+              sub={ev.fallback ? `leeg = retail (${eur(ev.v)})` : ""}
+              bewerk={<DirectVeld waarde={b.ownValue} getal placeholder="—" sc={sc}
+                onKlaar={(v) => onPatch && onPatch({ ownValue: v })} />} />
           </div>
           <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 8 }}>
             {b.quantity || 1}× in kelder · totaal {eur(ev.v * (num(b.quantity) || 1))}{ev.fallback ? " (op retail)" : ""}
@@ -2400,7 +2421,11 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
         </div>
 
         {b.location && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Locatie</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.location}</p></div>}
-        {b.tasteNotes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Mijn proefnotities</div><p style={{ ...S.bodyText, fontSize: sc(14), whiteSpace: "pre-wrap" }}>{b.tasteNotes}</p></div>}
+        <div>
+          <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Mijn proefnotities</div>
+          <DirectVeld waarde={b.tasteNotes} onKlaar={(v) => onPatch && onPatch({ tasteNotes: v })}
+            meerregelig placeholder="Kleur, neus, smaak, evolutie… (wordt vanzelf bewaard)" sc={sc} />
+        </div>
         {b.notes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Notities</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p></div>}
 
         <WineChat b={b} sc={sc} />
@@ -2477,12 +2502,56 @@ function WineChat({ b, sc }) {
   );
 }
 
-function ValCell({ label, value, sub, muted, sc }) {
+function ValCell({ label, value, sub, muted, sc, bewerk }) {
   return (
     <div style={S.valCell}>
       <div style={{ ...S.valCellLabel, fontSize: sc(11) }}>{label}</div>
-      <div style={{ ...S.valCellValue, fontSize: sc(17), color: muted ? "var(--ink-dim)" : "var(--ink)", fontStyle: muted ? "italic" : "normal" }}>{value}</div>
+      {bewerk || (
+        <div style={{ ...S.valCellValue, fontSize: sc(17), color: muted ? "var(--ink-dim)" : "var(--ink)", fontStyle: muted ? "italic" : "normal" }}>{value}</div>
+      )}
       {sub && <div style={{ ...S.valCellSub, fontSize: sc(10) }}>{sub}</div>}
+    </div>
+  );
+}
+
+// Veld dat rechtstreeks op de kaart staat en zichzelf bewaart zodra je weggaat of
+// even stopt met typen. Geen opslaan-knop, geen omweg via Bewerken.
+function DirectVeld({ waarde, onKlaar, meerregelig, getal, placeholder, sc }) {
+  const [tekst, setTekst] = useState(String(waarde ?? ""));
+  const [bewaard, setBewaard] = useState(false);
+  const laatste = useRef(String(waarde ?? ""));
+  const timer = useRef(null);
+  // volgt een wijziging die van buiten komt (bv. een opzoeking)
+  useEffect(() => {
+    const nieuw = String(waarde ?? "");
+    if (nieuw !== laatste.current) { laatste.current = nieuw; setTekst(nieuw); }
+  }, [waarde]);
+  const bewaar = (v) => {
+    if (v === laatste.current) return;
+    laatste.current = v;
+    onKlaar && onKlaar(v);
+    setBewaard(true);
+    setTimeout(() => setBewaard(false), 1600);
+  };
+  const wijzig = (v) => {
+    setTekst(v);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => bewaar(v), 900);   // even stoppen met typen = bewaren
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const stijl = { ...S.input, fontSize: sc(16), padding: getal ? "6px 8px" : "10px 12px" };
+  return (
+    <div style={{ position: "relative" }}>
+      {meerregelig ? (
+        <textarea style={{ ...stijl, minHeight: 92, resize: "vertical", lineHeight: 1.5 }} rows={3}
+          value={tekst} placeholder={placeholder}
+          onChange={(e) => wijzig(e.target.value)} onBlur={() => { clearTimeout(timer.current); bewaar(tekst); }} />
+      ) : (
+        <input style={{ ...stijl, fontFamily: "'JetBrains Mono',monospace" }} type={getal ? "number" : "text"}
+          inputMode={getal ? "decimal" : undefined} value={tekst} placeholder={placeholder}
+          onChange={(e) => wijzig(e.target.value)} onBlur={() => { clearTimeout(timer.current); bewaar(tekst); }} />
+      )}
+      {bewaard && <span style={S.bewaardTag}><Check size={11} /> bewaard</span>}
     </div>
   );
 }
@@ -2621,7 +2690,8 @@ const S = {
   tsBtn: { width: 36, background: "transparent", border: "none", color: "var(--ink2)", cursor: "pointer", display: "grid", placeItems: "center", lineHeight: 1, fontFamily: "'Spectral',serif" },
 
   // sommelier: scrollend antwoordgebied, invoerveld blijft onderaan staan
-  bulkRij: { display: "flex", flexDirection: "column", gap: 10, padding: "12px 12px 14px", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12 },
+  bewaardTag: { position: "absolute", right: 6, top: -16, fontSize: 10, color: "var(--green)", display: "inline-flex", alignItems: "center", gap: 3 },
+  bulkRij: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid var(--bg3)" },
   chatScroll: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", padding: "2px 2px 4px" },
   chatIntro: { background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "16px 16px 18px" },
   chatTip: { background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: 20, padding: "10px 16px", fontSize: 16, cursor: "pointer", textAlign: "left", lineHeight: 1.45 },

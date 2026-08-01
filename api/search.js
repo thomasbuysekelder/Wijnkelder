@@ -373,6 +373,36 @@ async function paginaPrijzen(urls, term) {
   return resultaten.filter(Boolean);
 }
 
+// ---------- coördinaten ----------
+// Het model liet zich hier niet op vertrouwen: het gaf per jaargang van dezelfde
+// wijn een andere plek, en meestal de verkeerde. Nominatim (OpenStreetMap) is
+// gratis, vereist geen sleutel en geeft voor dezelfde streek altijd hetzelfde punt.
+// Hun beleid: hoogstens één bevraging per seconde en een herkenbare user-agent.
+const geoCache = new Map();
+let laatsteGeo = 0;
+
+async function geocode(q) {
+  const sleutel = String(q || "").trim().toLowerCase();
+  if (!sleutel) return null;
+  if (geoCache.has(sleutel)) return geoCache.get(sleutel);
+  const wachten = 1100 - (Date.now() - laatsteGeo);
+  if (wachten > 0) await slaap(wachten);
+  laatsteGeo = Date.now();
+  try {
+    const r = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(sleutel), {
+      headers: { "user-agent": "kelder-app/1.0 (persoonlijke wijnkelder)", accept: "application/json" },
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const hit = Array.isArray(j) ? j[0] : null;
+    const uit = hit && hit.lat && hit.lon
+      ? { lat: parseFloat(hit.lat), lng: parseFloat(hit.lon), naam: strip(String(hit.display_name || "")).slice(0, 120) }
+      : null;
+    geoCache.set(sleutel, uit);
+    return uit;
+  } catch { return null; }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).json({ error: "Alleen POST" }); return; }
   const body = req.body || {};
@@ -380,6 +410,8 @@ export default async function handler(req, res) {
   const wine = body.wine && typeof body.wine === "object" ? body.wine : null;
   const wiki = String(body.wiki || "").slice(0, 120);
   const pages = Array.isArray(body.pages) ? body.pages.slice(0, 6).map(String) : null;
+  const geo = String(body.geo || "").slice(0, 160);
+  if (geo) { res.status(200).json({ results: [], offers: [], wiki: null, geo: await geocode(geo), sources: {} }); return; }
   if (!q && !wine && !wiki && !pages) { res.status(400).json({ error: "query, wine, wiki of pages ontbreekt" }); return; }
 
   // aparte modus: enkel winkelpagina's openen en hun prijs uitlezen
