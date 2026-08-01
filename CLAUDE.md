@@ -184,6 +184,14 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - De indruk gaat daarnaast bij `tasteNotes` (met datum ervoor), want dat is het
   veld dat de sommelier leest. `herproefOp` (jaartal) voedt het filter
   "Klaar om te herproeven".
+- De knop "Logboek" in de kop opent `LogboekModal`: alle regels van alle flessen,
+  nieuw naar oud, per maand gegroepeerd, met de tellingen erboven. Tik je een regel
+  aan, dan open je die fles.
+- Een fles die je ELDERS dronk (restaurant, bij vrienden) krijgt `buitenKelder: true`
+  en `quantity: "0"`. Ze telt mee in het logboek en bij de sommelier, maar NIET in
+  de kelderlijst, de statistiek, de kaart, de Excel-export of de dubbelcontrole:
+  daarvoor bestaat `kelder` (= `bottles` zonder `buitenKelder`). Gebruik overal
+  `kelder` behalve waar het logboek zelf bedoeld is.
 - `drinkSamenvatting()` telt deze maand / dit jaar / totaal DETERMINISTISCH in code
   en geeft die cijfers aan de sommelier. Het model mag daar zelf niets bijrekenen —
   zo kan "voor hoeveel geld heb ik deze maand wijn gedronken" niet fout gaan.
