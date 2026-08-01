@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v30";
+const APP_VERSION = "kelder-v31";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -554,8 +554,7 @@ const WINE_SCHEMA = `{
   "drinkFrom": beste drinkjaar vanaf (getal),
   "drinkTo": beste drinkjaar tot (getal),
   "score": kritiekscore 0-100 indien gekend anders null,
-  "confidence": "hoog, midden of laag",
-  "notes": "korte relevante nota"
+  "confidence": "hoog, midden of laag"
 }`;
 
 // images: array of { base64, media } — may be multiple photos (front/back) of the SAME bottle
@@ -806,7 +805,9 @@ function resultToData(res) {
     purchasePrice: "", retailValue: "", ownValue: "",
     supplier: "", score: res.score ?? "",
     drinkFrom: res.drinkFrom ?? "", drinkTo: res.drinkTo ?? "",
-    notes: res.notes || "",
+    // notities blijven van de gebruiker: de etiketlezing schrijft er niet in,
+    // want die gok werd nooit meer gecorrigeerd en bleef als feit staan
+    notes: "",
     priceNote: "", priceUrl: "",
     _confidence: res.confidence || "",
   };

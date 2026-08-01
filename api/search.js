@@ -208,18 +208,26 @@ function vivinoUrl(w, year) {
 
 // Vivino-marktprijzen: echte winkelprijzen per jaargang in EUR voor de Belgische markt.
 // Dit vervangt het "gokken" van een prijs door de AI.
+// Woorden die niets onderscheidends zeggen; die maken de zoekterm alleen breder.
+const VIVINO_STOP = new Set(["chateau", "domaine", "weingut", "tenuta", "bodega", "bodegas", "cantina",
+  "azienda", "agricola", "wijn", "wine", "vino", "vin", "les", "des", "del", "della", "the", "and", "van", "der"]);
+const vTokens = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, " ").split(" ")
+  .filter((w) => w.length > 2 && !VIVINO_STOP.has(w) && !/^(19|20)\d\d$/.test(w));
+
 async function vivino(wine) {
   // 'term' is de opgekuiste zoekterm van de app (zonder dubbele producentnaam);
   // valt die weg, dan bouwen we hem hier alsnog uit de losse velden.
   const term = String(wine.term || "").trim() || [wine.producer, wine.name, wine.vintage].filter(Boolean).join(" ").trim();
   if (!term) return [];
-  const p = new URLSearchParams({
-    country_code: "BE", currency_code: "EUR",
-    min_rating: "1", page: "1", per_page: "24",
-    price_range_min: "0", price_range_max: "100000",
-    search_term: term,
-  });
-  try {
+
+  const zoek = async (zoekterm) => {
+    const p = new URLSearchParams({
+      country_code: "BE", currency_code: "EUR",
+      min_rating: "1", page: "1", per_page: "24",
+      price_range_min: "0", price_range_max: "100000",
+      search_term: zoekterm,
+    });
     const r = await fetch("https://www.vivino.com/api/explore/explore?" + p, {
       headers: {
         "user-agent": UA,
@@ -230,7 +238,31 @@ async function vivino(wine) {
     });
     if (!r.ok) return null;   // geblokkeerd of stuk — niet hetzelfde als 'niets gevonden'
     const j = await r.json();
-    const matches = (j && j.explore_vintage && j.explore_vintage.matches) || [];
+    return (j && j.explore_vintage && j.explore_vintage.matches) || [];
+  };
+
+  try {
+    let matches = await zoek(term);
+    if (matches === null) return null;
+
+    // Hoort er iets bij DEZE wijn? Zo niet, dan is een strakkere zoekterm met enkel
+    // de onderscheidende woorden veel kansrijker: die geeft een korte, gerichte lijst
+    // in plaats van een brede waarin de juiste wijn buiten beeld kan vallen.
+    const wil = vTokens(term);
+    const past = (m) => {
+      const w = (m.vintage || {}).wine || {};
+      const hay = vTokens(((w.winery && w.winery.name) || "") + " " + (w.name || ""));
+      return wil.length ? wil.filter((t) => hay.includes(t)).length / wil.length >= 0.6 : false;
+    };
+    if (!matches.some(past)) {
+      const kern = wil.join(" ");
+      if (kern && kern !== term) {
+        const tweede = await zoek(kern);
+        if (tweede && tweede.length) matches = matches.concat(tweede);
+      }
+    }
+
+    const gezien = new Set();
     return matches.map((m) => {
       const v = m.vintage || {};
       const w = v.wine || {};
@@ -253,7 +285,9 @@ async function vivino(wine) {
       // enkel prijzen in EUR tellen mee als prijs; een aanbod zonder EUR-prijs mag
       // wel blijven voor de Vivino-score (rating + aantal beoordelingen)
       .map((o) => (o.price && o.currency === "EUR" ? o : { ...o, price: null }))
-      .filter((o) => o.price || (o.rating && o.ratings));
+      .filter((o) => o.price || (o.rating && o.ratings))
+      // de twee zoekopdrachten kunnen dezelfde wijn opleveren
+      .filter((o) => { const k = `${o.producer}|${o.name}|${o.vintage}`; if (gezien.has(k)) return false; gezien.add(k); return true; });
   } catch { return null; }
 }
 
