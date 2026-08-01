@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v36";
+const APP_VERSION = "kelder-v37";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -21,7 +21,19 @@ const EMPTY = {
   supplier: "", score: "", drinkFrom: "", drinkTo: "", notes: "", tasteNotes: "",
   grape: "", description: "", reviews: "", lat: "", lng: "", placeName: "", imageUrl: "", enriched: false,
   priceNote: "", priceManual: false, priceUrl: "", verifyNote: "",
+  volumeMl: 750,
 };
+
+// Flesformaten. 75 cl is de norm; alle prijzen die we opzoeken gelden daarvoor.
+const FORMATEN = [
+  { ml: 375, label: "halve fles (37,5 cl)" },
+  { ml: 750, label: "fles (75 cl)" },
+  { ml: 1500, label: "magnum (1,5 l)" },
+  { ml: 3000, label: "dubbele magnum (3 l)" },
+  { ml: 5000, label: "jeroboam (5 l)" },
+];
+const formaatLabel = (ml) => (FORMATEN.find((f) => f.ml === (num(ml) || 750)) || {}).label || `${num(ml)} ml`;
+const formaatKort = (ml) => { const v = num(ml) || 750; return v === 750 ? "" : v === 1500 ? "magnum" : v === 375 ? "halve fles" : v >= 1000 ? `${v / 1000} l` : `${v / 10} cl`; };
 
 // Een zelf ingetikte retailwaarde blijft altijd staan: een latere opzoeking mag
 // ze niet overschrijven. Daarom wordt handmatige invoer apart gemarkeerd.
@@ -82,7 +94,7 @@ function maturity(b) {
 }
 
 // duplicate detection: same producer + name + vintage (case/space-insensitive)
-const dupKey = (b) => [b.producer, b.name, b.vintage].map((x) => String(x ?? "").trim().toLowerCase()).join("|");
+const dupKey = (b) => [b.producer, b.name, b.vintage, num(b.volumeMl) || 750].map((x) => String(x ?? "").trim().toLowerCase()).join("|");
 function findDuplicate(bottles, b, ignoreId) {
   const k = dupKey(b);
   return bottles.find((x) => x.id !== ignoreId && dupKey(x) === k);
@@ -182,7 +194,7 @@ async function saveBottles(list) {
 const HEADERS = {
   producer: "Producent", name: "Wijn", vintage: "Jaargang", region: "Streek",
   country: "Land", color: "Kleur", grape: "Druif", quantity: "Aantal", location: "Locatie",
-  purchasePrice: "Aankoopprijs", retailValue: "Retailwaarde", ownValue: "Eigen waarde",
+  purchasePrice: "Aankoopprijs", retailValue: "Retailwaarde", ownValue: "Eigen waarde", volumeMl: "Formaat (ml)",
   supplier: "Leverancier", score: "Score", drinkFrom: "Drink vanaf", drinkTo: "Drink tot", notes: "Notities", tasteNotes: "Proefnotities",
 };
 const norm = (s) => String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
@@ -195,6 +207,7 @@ const IMPORT_MAP = {
   kleur: "color", color: "color", type: "color",
   druif: "grape", druiven: "grape", cepage: "grape", grape: "grape", varietal: "grape",
   aantal: "quantity", quantity: "quantity", qty: "quantity",
+  formaat: "volumeMl", volume: "volumeMl", volumeml: "volumeMl", inhoud: "volumeMl",
   locatie: "location", plaats: "location", rek: "location", location: "location",
   aankoopprijs: "purchasePrice", aankoop: "purchasePrice", purchaseprice: "purchasePrice", cost: "purchasePrice",
   retailwaarde: "retailValue", marktwaarde: "retailValue", retailprijs: "retailValue", huidigewaarde: "retailValue", currentvalue: "retailValue", marketvalue: "retailValue",
@@ -540,7 +553,9 @@ function wineTerm(b) {
   const naam = String(b.name || "").trim();
   const inNaam = new Set(naam.split(/\s+/).map(kaal).filter(Boolean));
   const prod = String(b.producer || "").trim().split(/\s+/).filter((w) => kaal(w) && !inNaam.has(kaal(w))).join(" ");
-  return [prod, naam].filter(Boolean).join(" ").trim() || String(b.producer || b.name || "").trim();
+  // haakjes en leestekens halen we eruit: "Soldera (Gianfranco Soldera)" zoekt slechter
+  const uit = [prod, naam].filter(Boolean).join(" ").trim() || String(b.producer || b.name || "").trim();
+  return uit.replace(/[()\[\]{}"'`]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 const WINE_SCHEMA = `{
@@ -631,15 +646,19 @@ async function lookupWineFull(b) {
   // twee gratis zoekopdrachten: één voor prijs/algemeen, één gericht op recensies
   // De prijszoekopdracht krijgt ook de Wikipedia-opzoeking mee (gratis, geen sleutel)
   // en is wat korter afgekapt, zodat het totaal richting het model gelijk blijft.
-  const zoek = () => Promise.all([
-    fetchSearch({
+  // NIET tegelijk zoeken: Brave laat op de gratis laag één bevraging per seconde toe,
+  // dus twee gelijktijdige zoekopdrachten leveren gegarandeerd een weigering op de
+  // tweede op — en dat was net de recensiezoekopdracht.
+  const zoek = async () => {
+    const eerste = await fetchSearch({
       query: `${naam} wijn prijs per fles`,
       wine: { term: naam, producer: b.producer, name: b.name, vintage: b.vintage },
       wiki: String(b.producer || b.name || "").trim(),
       max: 2000,
-    }),
-    fetchSearch({ query: `${naam} recensie review tasting notes`, prefix: "R" }),
-  ]);
+    });
+    const tweede = await fetchSearch({ query: `${naam} recensie review tasting notes`, prefix: "R" });
+    return [eerste, tweede];
+  };
   // DuckDuckGo knijpt bij drukte soms af en geeft dan een lege pagina terug. Komt
   // ALLES leeg terug, dan is dat een mislukte opzoeking en géén bewijs dat er niets
   // bestaat: één keer gratis opnieuw proberen, en anders eerlijk melden dat het
@@ -818,6 +837,13 @@ function applyMarketPrice(res, mp, b, items, rates) {
     res.priceNote = "geen prijs gevonden";
     res.priceUrl = "";
   }
+  // Alle opgezochte prijzen gelden voor een fles van 75 cl. Voor een magnum of een
+  // halve fles rekenen we evenredig om, en zeggen we dat er uitdrukkelijk bij.
+  const ml = num(b.volumeMl) || 750;
+  if (ml !== 750 && num(res.retailPrice) > 0) {
+    res.retailPrice = Math.round(num(res.retailPrice) * (ml / 750) * 100) / 100;
+    res.priceNote += `, omgerekend naar ${formaatLabel(ml)}`;
+  }
   return res;
 }
 
@@ -958,6 +984,7 @@ function cellarLine(b, withNotes) {
     v > 0 ? `€${Math.round(v)}` : "prijs onbekend",
     [window, st.label !== "—" ? st.label : ""].filter(Boolean).join(" ") || "geen drinkvenster",
     `${num(b.quantity) || 1}x`,
+    formaatKort(b.volumeMl),
     b.location,
     num(b.score) > 0 ? `score ${b.score}` : "",
   ];
@@ -1245,7 +1272,13 @@ export default function App() {
       const vintage = String(row.vintage || "").trim();
       const qty = String(row.quantity || "1");
       if (!vintage) return;
-      const b = { ...cleanBottle(shared), vintage, quantity: qty, color: String(shared.color || "rood").toLowerCase() };
+      const b = {
+        ...cleanBottle(shared), vintage, quantity: qty,
+        color: String(shared.color || "rood").toLowerCase(),
+        volumeMl: num(row.volumeMl) || 750,
+        purchasePrice: String(row.purchasePrice ?? "").trim() || shared.purchasePrice || "",
+        supplier: String(row.supplier ?? "").trim() || shared.supplier || "",
+      };
       const existing = findDuplicate(list, b);
       if (existing) { list = list.map((x) => x.id === existing.id ? { ...x, quantity: String((num(x.quantity) || 0) + (num(qty) || 0)) } : x); merged++; }
       else { const nb = { ...b, id: uid(), enriched: false }; list = [nb, ...list]; added++; nieuwe.push(nb); }
@@ -1618,6 +1651,7 @@ function Row({ b, scale, onOpen, onDelete }) {
           <span style={{ ...S.producer, fontSize: sc(15), flex: 1, minWidth: 0 }}>{b.name || b.producer || "—"}</span>
           <span style={S.rowLineRight}>
             {b.vintage && <span style={{ ...S.vintage, fontSize: sc(14) }}>{b.vintage}</span>}
+            {formaatKort(b.volumeMl) && <span style={{ ...S.qtyPill, fontSize: sc(11), color: "var(--gold)" }}>{formaatKort(b.volumeMl)}</span>}
             <span style={{ ...S.qtyPill, fontSize: sc(12) }}>{b.quantity || 1}×</span>
           </span>
         </div>
@@ -1685,6 +1719,12 @@ function BottleFields({ v, on }) {
           <QtyStepper value={v.quantity} onChange={(val) => on("quantity", val)} />
         </div>
       </div>
+      <label style={S.field}>
+        <span style={S.fieldLabel}>Formaat</span>
+        <select style={S.input} value={num(v.volumeMl) || 750} onChange={(e) => on("volumeMl", parseInt(e.target.value))}>
+          {FORMATEN.map((f) => <option key={f.ml} value={f.ml}>{f.label}</option>)}
+        </select>
+      </label>
       <div style={S.formRow}>{fld("grape", "Druif")}{fld("score", "Score", "number", 0.5)}</div>
       <div style={S.formRow}>{fld("region", "Streek")}{fld("country", "Land")}</div>
       <div style={S.formRow}>{fld("location", "Locatie in kelder")}{fld("supplier", "Leverancier")}</div>
@@ -1941,12 +1981,13 @@ function DupModal({ dp, onResolve }) {
 function BulkModal({ initial, onAdd, onClose }) {
   const [shared, setShared] = useState({ ...EMPTY, ...(initial || {}) });
   const prefilled = !!(initial && (initial.producer || initial.name));
-  const [rows, setRows] = useState([{ vintage: "", quantity: "1" }, { vintage: "", quantity: "1" }, { vintage: "", quantity: "1" }]);
+  const leegRij = () => ({ vintage: "", quantity: "1", volumeMl: 750, purchasePrice: "", supplier: "" });
+  const [rows, setRows] = useState([leegRij(), leegRij(), leegRij()]);
   const [busy, setBusy] = useState(false);
   const [metOpzoeken, setMetOpzoeken] = useState(true);
   const set = (k, v) => setShared({ ...shared, [k]: v });
   const setRow = (i, k, v) => setRows(rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
-  const addRow = () => setRows([...rows, { vintage: "", quantity: "1" }]);
+  const addRow = () => setRows([...rows, leegRij()]);
   const rmRow = (i) => setRows(rows.filter((_, j) => j !== i));
   const filled = rows.filter((r) => String(r.vintage).trim());
   const total = filled.reduce((s, r) => s + (num(r.quantity) || 0), 0);
@@ -1996,16 +2037,36 @@ function BulkModal({ initial, onAdd, onClose }) {
 
         <div style={{ ...S.sectionLabel, marginTop: 6 }}>Jaargangen</div>
         {rows.map((r, i) => (
-          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <label style={{ ...S.field, flex: 1 }}>
-              {i === 0 && <span style={S.fieldLabel}>Jaargang</span>}
-              <input style={S.input} placeholder="bv. 2018" value={r.vintage} onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
-            </label>
-            <div style={{ ...S.field, flex: "0 0 auto" }}>
-              {i === 0 && <span style={S.fieldLabel}>Aantal</span>}
-              <QtyStepper value={r.quantity} onChange={(v) => setRow(i, "quantity", v)} />
+          <div key={i} style={S.bulkRij}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+              <label style={{ ...S.field, flex: 1, minWidth: 90 }}>
+                <span style={S.fieldLabel}>Jaargang</span>
+                <input style={S.input} placeholder="bv. 2018" value={r.vintage} onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
+              </label>
+              <div style={{ ...S.field, flex: "0 0 auto" }}>
+                <span style={S.fieldLabel}>Aantal</span>
+                <QtyStepper value={r.quantity} onChange={(v) => setRow(i, "quantity", v)} />
+              </div>
+              <button style={{ ...S.iconBtn, marginBottom: 2 }} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
             </div>
-            <button style={{ ...S.iconBtn, marginBottom: 2 }} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <label style={{ ...S.field, flex: 1.2, minWidth: 130 }}>
+                <span style={S.fieldLabel}>Formaat</span>
+                <select style={S.input} value={num(r.volumeMl) || 750} onChange={(e) => setRow(i, "volumeMl", parseInt(e.target.value))}>
+                  {FORMATEN.map((f) => <option key={f.ml} value={f.ml}>{f.label}</option>)}
+                </select>
+              </label>
+              <label style={{ ...S.field, flex: 1, minWidth: 110 }}>
+                <span style={S.fieldLabel}>Aankoopprijs (€/fles)</span>
+                <input style={S.input} type="number" inputMode="decimal" value={r.purchasePrice}
+                  onChange={(e) => setRow(i, "purchasePrice", e.target.value)} />
+              </label>
+              <label style={{ ...S.field, flex: 1.3, minWidth: 130 }}>
+                <span style={S.fieldLabel}>Waar gekocht</span>
+                <input style={S.input} value={r.supplier} placeholder={shared.supplier || "leverancier"}
+                  onChange={(e) => setRow(i, "supplier", e.target.value)} />
+              </label>
+            </div>
           </div>
         ))}
         <button style={{ ...S.btnGhost, alignSelf: "flex-start" }} onClick={addRow}><Plus size={15} /> Jaargang toevoegen</button>
@@ -2251,6 +2312,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
         {/* chips */}
         <div style={S.chips}>
           <span style={{ ...S.chip, fontSize: sc(12) }}>{b.color}</span>
+          {formaatKort(b.volumeMl) && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold-dim)" }}>{formaatLabel(b.volumeMl)}</span>}
           {b.grape && <span style={{ ...S.chip, fontSize: sc(12) }}>{b.grape}</span>}
           {(b.region || b.country) && <span style={{ ...S.chip, fontSize: sc(12) }}>{[b.region, b.country].filter(Boolean).join(", ")}</span>}
           {b.score && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold)" }}>{b.score}</span>}
@@ -2559,6 +2621,7 @@ const S = {
   tsBtn: { width: 36, background: "transparent", border: "none", color: "var(--ink2)", cursor: "pointer", display: "grid", placeItems: "center", lineHeight: 1, fontFamily: "'Spectral',serif" },
 
   // sommelier: scrollend antwoordgebied, invoerveld blijft onderaan staan
+  bulkRij: { display: "flex", flexDirection: "column", gap: 10, padding: "12px 12px 14px", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12 },
   chatScroll: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", padding: "2px 2px 4px" },
   chatIntro: { background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "16px 16px 18px" },
   chatTip: { background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: 20, padding: "10px 16px", fontSize: 16, cursor: "pointer", textAlign: "left", lineHeight: 1.45 },
