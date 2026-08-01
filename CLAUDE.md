@@ -143,9 +143,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   en er gaat één Haiku-call overheen. Daarom is automatisch opzoeken bij het
   TOEVOEGEN van een fles toegestaan (na foto-analyse, na zoeken op naam, en in de
   achtergrond na handmatig toevoegen).
-- Nog altijd verboden: opzoeken in lussen of bij het openen/tonen van een fles,
-  en automatisch opzoeken bij bulk-invoer van meerdere jaargangen — daar blijft
-  de expliciete tik op "Info opzoeken" gelden.
+- Bij bulk-invoer van meerdere jaargangen MAG er per jaargang opgezocht worden,
+  maar enkel als de gebruiker het vinkje aan laat staan. De geschatte kost staat
+  bij dat vinkje (±1 cent per jaargang). De opzoekingen lopen ÉÉN VOOR ÉÉN, nooit
+  parallel: Brave laat op de gratis laag één bevraging per seconde toe en elke
+  opzoeking doet er meerdere.
+- Nog altijd verboden: opzoeken in lussen of bij het openen/tonen van een fles.
 - Upload-afbeeldingen blijven max 1200px JPEG.
 
 ## Releaseroutine

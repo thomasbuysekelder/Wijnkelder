@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v35";
+const APP_VERSION = "kelder-v36";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1238,8 +1238,9 @@ export default function App() {
   const removeBottle = (id) => setBottles((prev) => prev.filter((b) => b.id !== id));
 
   // ---- bulk multi-vintage ----
-  const addBulk = (shared, rows) => {
+  const addBulk = (shared, rows, metOpzoeken) => {
     let list = bottles, added = 0, merged = 0;
+    const nieuwe = [];
     rows.forEach((row) => {
       const vintage = String(row.vintage || "").trim();
       const qty = String(row.quantity || "1");
@@ -1247,11 +1248,26 @@ export default function App() {
       const b = { ...cleanBottle(shared), vintage, quantity: qty, color: String(shared.color || "rood").toLowerCase() };
       const existing = findDuplicate(list, b);
       if (existing) { list = list.map((x) => x.id === existing.id ? { ...x, quantity: String((num(x.quantity) || 0) + (num(qty) || 0)) } : x); merged++; }
-      else { const nb = { ...b, id: uid(), enriched: false }; list = [nb, ...list]; added++; }
+      else { const nb = { ...b, id: uid(), enriched: false }; list = [nb, ...list]; added++; nieuwe.push(nb); }
     });
     persist(list);
     setShowBulk(false);
     flash(`${added} toegevoegd${merged ? `, ${merged} samengevoegd` : ""}.`);
+    if (metOpzoeken && nieuwe.length) bulkLookup(nieuwe);
+  };
+
+  // Per jaargang een eigen opzoeking, ÉÉN VOOR ÉÉN. Niet parallel: Brave laat op de
+  // gratis laag één bevraging per seconde toe, en elke opzoeking doet er meerdere.
+  const bulkLookup = async (lijst) => {
+    for (let i = 0; i < lijst.length; i++) {
+      const b = lijst[i];
+      setToast(`Info opzoeken ${i + 1}/${lijst.length} — jaargang ${b.vintage}…`);
+      try {
+        const r = await lookupWineFull(b);
+        patchBottle(b.id, enrichPatch(b, r, { keepFilled: true }));
+      } catch { /* deze jaargang overslaan, de volgende gewoon proberen */ }
+    }
+    flash(`Info opgezocht voor ${lijst.length} jaargang${lijst.length > 1 ? "en" : ""}.`);
   };
 
   // ---- vorige versie terugzetten ----
@@ -1554,7 +1570,12 @@ export default function App() {
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
         onMultiVintage={(e) => { setBulkInit({ producer: e.producer, name: e.name, region: e.region, country: e.country, color: e.color, grape: e.grape, location: e.location, supplier: e.supplier }); setEdit(null); setShowBulk(true); }} />}
       {importPending && <ImportModal rows={importPending} onApply={applyImport} onCancel={() => setImportPending(null)} />}
-      {photoJobs && <PhotoModal jobs={photoJobs} setJobs={setPhotoJobs} onAdd={addPhotoResult} onAddPhoto={onAddPhotoToJob} onLookup={runJobLookup} onClose={() => setPhotoJobs(null)} />}
+      {photoJobs && <PhotoModal jobs={photoJobs} setJobs={setPhotoJobs} onAdd={addPhotoResult} onAddPhoto={onAddPhotoToJob} onLookup={runJobLookup}
+        onMultiVintage={(d) => {
+          setBulkInit({ producer: d.producer, name: d.name, region: d.region, country: d.country, color: d.color, grape: d.grape, location: d.location, supplier: d.supplier });
+          setPhotoJobs(null); setShowBulk(true);
+        }}
+        onClose={() => setPhotoJobs(null)} />}
       {dupPrompt && <DupModal dp={dupPrompt} onResolve={resolveDup} />}
       {showBulk && <BulkModal initial={bulkInit} onAdd={addBulk} onClose={() => setShowBulk(false)} />}
       {showSomm && <SommelierModal bottles={bottles} thread={sommThread} setThread={setSommThread} onClose={() => setShowSomm(false)} />}
@@ -1768,7 +1789,7 @@ function ImportModal({ rows, onApply, onCancel }) {
 // ---------- photo modal ----------
 // job is nog bezig zolang het etiket gelezen of de info opgezocht wordt
 const busy = (job) => job.status === "pending" || job.status === "enriching";
-function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onClose }) {
+function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage, onClose }) {
   const [queries, setQueries] = useState({});
   const [searching, setSearching] = useState(null);
   const setData = (id, k, v) => setJobs((prev) => prev.map((j) => j.id === id ? { ...j, data: { ...j.data, ...fieldPatch(k, v) } } : j));
@@ -1849,9 +1870,16 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onClose }) {
             {!busy(job) && job.data && (
               <>
                 <BottleFields v={job.data} on={(k, v) => setData(job.id, k, v)} />
-                <button style={{ ...S.btnPrimary, marginTop: 4 }} onClick={() => onAdd(job.id)}>
-                  <Check size={15} /> Toevoegen aan kelder
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                  <button style={S.btnPrimary} onClick={() => onAdd(job.id)}>
+                    <Check size={15} /> Toevoegen aan kelder
+                  </button>
+                  {onMultiVintage && (job.data.producer || job.data.name) && (
+                    <button style={S.btnGhost} onClick={() => onMultiVintage(job.data)}>
+                      <Layers size={15} /> Meerdere jaargangen van deze wijn
+                    </button>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1915,6 +1943,7 @@ function BulkModal({ initial, onAdd, onClose }) {
   const prefilled = !!(initial && (initial.producer || initial.name));
   const [rows, setRows] = useState([{ vintage: "", quantity: "1" }, { vintage: "", quantity: "1" }, { vintage: "", quantity: "1" }]);
   const [busy, setBusy] = useState(false);
+  const [metOpzoeken, setMetOpzoeken] = useState(true);
   const set = (k, v) => setShared({ ...shared, [k]: v });
   const setRow = (i, k, v) => setRows(rows.map((r, j) => j === i ? { ...r, [k]: v } : r));
   const addRow = () => setRows([...rows, { vintage: "", quantity: "1" }]);
@@ -1946,7 +1975,7 @@ function BulkModal({ initial, onAdd, onClose }) {
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button></div>
       <p style={{ ...S.bodyText, color: "var(--ink-dim)", margin: "0 0 14px" }}>
         {prefilled ? "Voeg extra jaargangen toe van deze wijn. " : "Zelfde wijn, in één keer meerdere jaargangen en aantallen. "}
-        Open daarna per jaargang de detailkaart en tik op 'Vernieuwen' voor prijs, drinkvenster en recensies.
+        De prijs, het drinkvenster en de recensies worden per jaargang apart opgezocht.
       </p>
       <div style={S.form}>
         <div style={S.formRow}>{fld("producer", "Producent")}{fld("name", "Wijn / cuvée")}</div>
@@ -1981,9 +2010,16 @@ function BulkModal({ initial, onAdd, onClose }) {
         ))}
         <button style={{ ...S.btnGhost, alignSelf: "flex-start" }} onClick={addRow}><Plus size={15} /> Jaargang toevoegen</button>
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 14, cursor: "pointer", fontSize: 14, color: "var(--ink2)" }}>
+        <input type="checkbox" checked={metOpzoeken} onChange={(e) => setMetOpzoeken(e.target.checked)}
+          style={{ width: 18, height: 18, accentColor: "var(--wine-bright)" }} />
+        <span>Meteen prijs, drinkvenster en recensies opzoeken per jaargang
+          {filled.length ? <span style={{ color: "var(--ink-dim)" }}> — ongeveer {filled.length} cent</span> : null}
+        </span>
+      </label>
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
-        <button style={S.btnPrimary} onClick={() => onAdd(shared, filled)} disabled={!filled.length || (!shared.producer && !shared.name)}>
+        <button style={S.btnPrimary} onClick={() => onAdd(shared, filled, metOpzoeken)} disabled={!filled.length || (!shared.producer && !shared.name)}>
           <Check size={15} /> {filled.length} jaargangen · {total} flessen toevoegen
         </button>
       </div>
