@@ -215,19 +215,25 @@ const vTokens = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[
   .replace(/[^a-z0-9]+/g, " ").split(" ")
   .filter((w) => w.length > 2 && !VIVINO_STOP.has(w) && !/^(19|20)\d\d$/.test(w));
 
+let vivinoPogingen = 0;
 async function vivino(wine) {
+  vivinoPogingen = 0;
   // 'term' is de opgekuiste zoekterm van de app (zonder dubbele producentnaam);
   // valt die weg, dan bouwen we hem hier alsnog uit de losse velden.
   const term = String(wine.term || "").trim() || [wine.producer, wine.name, wine.vintage].filter(Boolean).join(" ").trim();
   if (!term) return [];
 
-  const zoek = async (zoekterm) => {
-    const p = new URLSearchParams({
-      country_code: "BE", currency_code: "EUR",
+  const zoek = async (zoekterm, land = "BE") => {
+    const velden = {
+      currency_code: "EUR",
       min_rating: "1", page: "1", per_page: "24",
       price_range_min: "0", price_range_max: "100000",
       search_term: zoekterm,
-    });
+    };
+    // zonder land laat je het marktfilter vallen; dat blijkt nodig wanneer het
+    // verzoek van een server komt in plaats van van een gewone verbinding
+    if (land) velden.country_code = land;
+    const p = new URLSearchParams(velden);
     const r = await fetch("https://www.vivino.com/api/explore/explore?" + p, {
       headers: {
         "user-agent": UA,
@@ -254,13 +260,23 @@ async function vivino(wine) {
       const hay = vTokens(((w.winery && w.winery.name) || "") + " " + (w.name || ""));
       return wil.length ? wil.filter((t) => hay.includes(t)).length / wil.length >= 0.6 : false;
     };
+    // Drie pogingen, elk alleen als de vorige niets opleverde dat bij deze wijn hoort:
+    // 1) de volledige term, 2) enkel de onderscheidende woorden, 3) zonder marktfilter.
+    let pogingen = 1;
     if (!matches.some(past)) {
       const kern = wil.join(" ");
       if (kern && kern !== term) {
+        pogingen++;
         const tweede = await zoek(kern);
-        if (tweede && tweede.length) matches = matches.concat(tweede);
+        if (tweede && tweede.length) matches = tweede.concat(matches);
+      }
+      if (!matches.some(past)) {
+        pogingen++;
+        const derde = await zoek(kern || term, "");
+        if (derde && derde.length) matches = derde.concat(matches);
       }
     }
+    vivinoPogingen = pogingen;
 
     const gezien = new Set();
     return matches.map((m) => {
@@ -402,6 +418,7 @@ export default async function handler(req, res) {
         webBron: wr.bron,                                   // welke bron het geworden is
         brave: wr.brave,                                    // en waarom Brave het eventueel niet werd
         vivino: staat(offers, !!wine),
+        vivinoPogingen,
         wikipedia: !wiki ? "niet gevraagd" : wikiInfo ? "ok" : "leeg",
       },
     });

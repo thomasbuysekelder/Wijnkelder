@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v33";
+const APP_VERSION = "kelder-v34";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -659,8 +659,14 @@ async function lookupWineFull(b) {
   let mp = pickPrice(offers, snips, b);
   // Nog geen prijs? Dan de winkelpagina's zelf openen. Webshops zetten hun prijs
   // machineleesbaar in de pagina, ook wanneer het zoekfragment ze niet toont.
+  let paginaNoot = "";
   if (!mp) {
-    const urls = [...(items || []), ...(rev.items || [])].map((i) => i.url).filter(Boolean);
+    // Een extra zoekopdracht gericht op winkels: de gewone resultaten zijn vaak
+    // redactionele sites die de wijn beschrijven maar niet verkopen.
+    const winkelZoek = await fetchSearch({ query: `${naam} kopen prijs per fles` });
+    const urls = [...new Set([...(items || []), ...(winkelZoek.items || []), ...(rev.items || [])]
+      .map((i) => i.url).filter(Boolean))];
+    paginaNoot = urls.length ? "" : "geen winkeladressen in de resultaten";
     if (urls.length) {
       const pg = await fetchSearch({ pages: urls, term: naam });
       const koersen = pg.rates || main.rates;
@@ -682,6 +688,7 @@ async function lookupWineFull(b) {
         };
       }).filter(Boolean);
       if (uitPaginas.length) mp = pickPrice(offers, uitPaginas, b);
+      if (!mp) paginaNoot = `${urls.length} winkelpagina${urls.length > 1 ? "'s" : ""} nagekeken, geen prijs`;
     }
   }
   const vr = vivinoRating(offers, b);
@@ -746,9 +753,10 @@ async function lookupWineFull(b) {
     const stuk = [
       kapot(main.sources.vivino) ? "Vivino was niet bereikbaar"
         : main.sources.vivino === "leeg" ? "Vivino gaf niets terug"
-        : !passend ? `Vivino kende deze wijn niet (${offers.length} andere resultaten)` : "",
+        : !passend ? `Vivino kende deze wijn niet (${offers.length} andere resultaten na ${main.sources.vivinoPogingen || 1} poging${(main.sources.vivinoPogingen || 1) > 1 ? "en" : ""})` : "",
       kapot(main.sources.web) ? `${web} was niet bereikbaar` : main.sources.web === "leeg" ? `${web} gaf niets terug` : "",
     ].filter(Boolean);
+    if (paginaNoot) stuk.push(paginaNoot);
     if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(", ")}`;
   }
   return res;
