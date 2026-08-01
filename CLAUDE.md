@@ -138,6 +138,23 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   `max_tokens` en wordt het antwoord afgekapt.
 - Geen tools, ook hier niet: de web_search-regel hierboven blijft gelden.
 
+## Drinklogboek
+- De knop "Gedronken" op de detailkaart opent `DrinkModal`: je vinkt er een AANTAL
+  flessen tegelijk af (nooit meer dan er in de kelder liggen), met een datum.
+- `DRINK_VRAGEN` is het vaste draaiboek. Alles mag leeg blijven; wat leeg is, is
+  niet van toepassing en komt NIET in het logboek. Vraag je een veld erbij, zet
+  het in die ene lijst — het venster, het logboek op de detailkaart en de
+  samenvatting voor de sommelier lezen alle drie uit die lijst.
+- Elke afvinking schrijft een regel in `b.drinkLog`: datum, aantal, de waarde per
+  fles OP DAT MOMENT (`effVal`) en de ingevulde antwoorden. Die waarde wordt
+  bewust bevroren, zodat een latere prijsopzoeking de geschiedenis niet herschrijft.
+- De indruk gaat daarnaast bij `tasteNotes` (met datum ervoor), want dat is het
+  veld dat de sommelier leest. `herproefOp` (jaartal) voedt het filter
+  "Klaar om te herproeven".
+- `drinkSamenvatting()` telt deze maand / dit jaar / totaal DETERMINISTISCH in code
+  en geeft die cijfers aan de sommelier. Het model mag daar zelf niets bijrekenen —
+  zo kan "voor hoeveel geld heb ik deze maand wijn gedronken" niet fout gaan.
+
 ## Kostenregels (belangrijk voor de eigenaar)
 - ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit
   een duurder model zonder expliciete vraag van de eigenaar.

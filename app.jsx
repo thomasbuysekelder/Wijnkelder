@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v42";
+const APP_VERSION = "kelder-v43";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -22,9 +22,20 @@ const EMPTY = {
   grape: "", description: "", reviews: "", lat: "", lng: "", placeName: "", imageUrl: "", enriched: false,
   priceNote: "", priceManual: false, priceUrl: "", verifyNote: "",
   volumeMl: 750,
+  drinkLog: [], herproefOp: "",
 };
 
 // Flesformaten. 75 cl is de norm; alle prijzen die we opzoeken gelden daarvoor.
+// Draaiboek bij het afvinken van een gedronken fles. Alles mag leeg blijven; wat
+// leeg is, is gewoon niet van toepassing en komt niet in het logboek terecht.
+const DRINK_VRAGEN = [
+  { k: "gelegenheid", label: "Gelegenheid of gezelschap", hint: "bv. verjaardag Marie, met Jan en An" },
+  { k: "gerecht", label: "Wat aten we erbij", hint: "bv. ossobuco" },
+  { k: "indruk", label: "Hoe smaakte hij nu", hint: "kleur, neus, smaak, evolutie", groot: true },
+  { k: "punten", label: "Mijn score op 100", hint: "bv. 95", getal: true },
+  { k: "nogKopen", label: "Opnieuw kopen?", keuzes: ["", "ja", "misschien", "nee"] },
+];
+
 const FORMATEN = [
   { ml: 375, label: "halve fles (37,5 cl)" },
   { ml: 750, label: "fles (75 cl)" },
@@ -1055,7 +1066,38 @@ const SOMM_SYSTEM =
   "(5) noem telkens producent, wijn en jaargang, en de locatie in de kelder als die gekend is; " +
   "(6) geef maximaal vier suggesties, de beste eerst; " +
   "(7) staat de lijst als 'voldoet NIET aan alle criteria' gemarkeerd, zeg dan eerlijk dat er niets past en zeg er bij elke suggestie expliciet bij wat er niet klopt (te duur, nog te jong, andere kleur). Is de lijst leeg, zeg dan gewoon dat je niets passends vindt. " +
+  "Staat er een MIJN DRINKLOGBOEK bij, dan zijn die cijfers al geteld door de app: neem ze letterlijk over voor vragen over wat er gedronken werd of hoeveel dat kostte, en reken er zelf niets bij. " +
   "Antwoord in vlot, informeel Nederlands (Vlaams), zonder tabellen en zonder markdown-opmaak: korte alinea's of streepjes.";
+
+// Wat je effectief gedronken hebt, deterministisch geteld uit het logboek. Het
+// model rekent hier niets zelf uit: het krijgt de cijfers kant en klaar.
+function drinkSamenvatting(bottles) {
+  const rijen = [];
+  for (const b of bottles || []) {
+    for (const e of (Array.isArray(b.drinkLog) ? b.drinkLog : [])) {
+      rijen.push({ ...e, b });
+    }
+  }
+  if (!rijen.length) return "";
+  rijen.sort((x, y) => String(y.d).localeCompare(String(x.d)));
+  const nu = new Date().toISOString().slice(0, 10);
+  const tel = (vanaf) => {
+    const r = rijen.filter((x) => String(x.d) >= vanaf);
+    return { n: r.reduce((s, x) => s + (num(x.n) || 1), 0), v: r.reduce((s, x) => s + (num(x.v) || 0) * (num(x.n) || 1), 0) };
+  };
+  const maand = tel(nu.slice(0, 8) + "01");
+  const jaar = tel(nu.slice(0, 4) + "-01-01");
+  const totaal = tel("0000");
+  const regel = (l, t) => `${l}: ${t.n} fles${t.n === 1 ? "" : "sen"}${t.v > 0 ? `, samen ongeveer ${eur(t.v)}` : ""}`;
+  const laatste = rijen.slice(0, 12).map((x) => {
+    const extra = DRINK_VRAGEN.map((v) => (x[v.k] ? `${v.label.toLowerCase()}: ${x[v.k]}` : "")).filter(Boolean).join("; ");
+    return `- ${x.d} · ${(num(x.n) || 1)}× ${[x.b.producer, x.b.name, x.b.vintage].filter(Boolean).join(" ")}` +
+      `${num(x.v) > 0 ? ` (${eur(num(x.v) * (num(x.n) || 1))})` : ""}${extra ? ` — ${extra}` : ""}`;
+  }).join("\n").slice(0, 1600);
+  return `\nMIJN DRINKLOGBOEK (al geteld, gebruik deze cijfers letterlijk):\n` +
+    `${regel("Deze maand", maand)}\n${regel("Dit jaar", jaar)}\n${regel("In totaal", totaal)}\n` +
+    `Laatst gedronken:\n${laatste}\n`;
+}
 
 async function askSommelier({ bottles, question, history }) {
   const crit = parseCriteria(question);
@@ -1088,6 +1130,7 @@ async function askSommelier({ bottles, question, history }) {
         (cut ? `\n(${cut} kandidaten zijn niet meegestuurd omdat de lijst te lang is; zeg dat erbij.)\n` : "") +
         (notesDropped ? "(proefnotities zijn weggelaten om plaats te sparen)\n" : "") +
         (noPrice ? `(${noPrice} wijnen zijn weggelaten omdat hun prijs niet gekend is; vermeld dat kort.)\n` : "") +
+        drinkSamenvatting(bottles) +
         (hist ? `\n${hist}\n` : "") +
         `\nMijn vraag: ${question}`,
     }],
@@ -1178,6 +1221,7 @@ export default function App() {
   const [bulkInit, setBulkInit] = useState(null);
   const [showSomm, setShowSomm] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [drinkFles, setDrinkFles] = useState(null);
   // financiële cijfers standaard verborgen; de keuze blijft bewaard
   const [toonGeld, setToonGeld] = useState(false);
   useEffect(() => { try { if (LS && LS.getItem(GELD_KEY) === "1") setToonGeld(true); } catch {} }, []);
@@ -1195,7 +1239,6 @@ export default function App() {
 
   const fileImport = useRef();
   const filePhoto = useRef();
-  const filePhotoOne = useRef();
   const filePhotoAdd = useRef();
   const [addTarget, setAddTarget] = useState(null);
   const bottlesRef = useRef(bottles);
@@ -1253,6 +1296,7 @@ export default function App() {
       if (fTodo === "geenWaarde" && effVal(b).v > 0) return false;
       if (fTodo === "nietOpgezocht" && b.enriched) return false;
       if (fTodo === "geenNotitie" && String(b.tasteNotes || "").trim()) return false;
+      if (fTodo === "herproef" && !(num(b.herproefOp) && num(b.herproefOp) <= NOW)) return false;
       if (query) {
         const q = query.toLowerCase();
         const hay = [b.producer, b.name, b.region, b.country, b.location, b.vintage, b.supplier]
@@ -1381,6 +1425,32 @@ export default function App() {
     flash(`Info opgezocht voor ${lijst.length} jaargang${lijst.length > 1 ? "en" : ""}.`);
   };
 
+  // ---- fles gedronken: aantal afboeken en in het logboek zetten ----
+  const boekGedronken = ({ aantal, datum, herproef, antw }) => {
+    const b = drinkFles;
+    if (!b) return;
+    const n = Math.max(1, Math.min(num(b.quantity) || 1, parseInt(aantal) || 1));
+    // enkel wat je invulde bewaren; lege antwoorden zijn niet van toepassing
+    const gevuld = Object.fromEntries(Object.entries(antw || {}).filter(([, v]) => String(v || "").trim()));
+    const entry = { d: datum || new Date().toISOString().slice(0, 10), n, v: effVal(b).v || 0, ...gevuld };
+    const log = [...(Array.isArray(b.drinkLog) ? b.drinkLog : []), entry];
+    // de indruk gaat ook naar de proefnotities, want dat is wat de sommelier leest
+    const stukjes = [antw?.indruk, antw?.gerecht ? `Bij ${antw.gerecht}.` : "", antw?.gelegenheid ? `(${antw.gelegenheid})` : ""]
+      .map((x) => String(x || "").trim()).filter(Boolean).join(" ");
+    const nieuweNotitie = stukjes
+      ? [String(b.tasteNotes || "").trim(), `${entry.d}: ${stukjes}`].filter(Boolean).join("\n\n")
+      : b.tasteNotes;
+    patchBottle(b.id, {
+      quantity: String(Math.max(0, (num(b.quantity) || 0) - n)),
+      drinkLog: log,
+      tasteNotes: nieuweNotitie,
+      ...(herproef ? { herproefOp: String(NOW + parseInt(herproef)) } : {}),
+      ...(antw?.punten ? { score: String(antw.punten) } : {}),
+    });
+    setDrinkFles(null);
+    flash(`${n} fles${n > 1 ? "sen" : ""} afgevinkt en genoteerd.`);
+  };
+
   // ---- vorige versie terugzetten ----
   const doRestorePrevious = async () => {
     const vorige = await loadPrevious();
@@ -1496,16 +1566,6 @@ export default function App() {
     jobs.forEach((job) => runAnalyze(job.id, job.images));
   };
   // one wine, several photos (front + back) in a single analysis
-  const onPhotoOneFiles = async (e) => {
-    const files = [...(e.target.files || [])];
-    e.target.value = "";
-    if (!files.length) return;
-    const imgs = (await Promise.all(files.map(readImageFile))).filter(Boolean);
-    if (!imgs.length) { flash("Kon deze foto's niet lezen."); return; }
-    const job = { id: uid(), status: "pending", images: imgs, preview: imgs[0].preview, data: null, error: null };
-    setPhotoJobs([job]);
-    runAnalyze(job.id, imgs);
-  };
   // add extra photo(s) to an existing job and re-analyze with all of them
   const onAddPhotoToJob = (jobId) => { setAddTarget(jobId); filePhotoAdd.current.click(); };
   const onPhotoAddFiles = async (e) => {
@@ -1579,9 +1639,6 @@ export default function App() {
                 <>
                   <div style={S.menuBackdrop} onClick={() => setMenuOpen(false)} />
                   <div style={S.menu}>
-                    <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); filePhotoOne.current.click(); }}><Camera size={15} /> Foto's van 1 fles (voor + achter)</button>
-                    <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setBulkInit(null); setShowBulk(true); }}><Layers size={15} /> Meerdere jaargangen</button>
-                    <div style={S.menuSep} />
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowBackup(true); }}><Save size={15} /> Backup (kopieer)</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowRestore(true); }}><Clipboard size={15} /> Herstel (plak)</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); doRestorePrevious(); }} disabled={!hasPrev}>
@@ -1645,6 +1702,7 @@ export default function App() {
           <option value="geenWaarde">Waarde ontbreekt</option>
           <option value="nietOpgezocht">Nog niet opgezocht</option>
           <option value="geenNotitie">Geen proefnotitie</option>
+          <option value="herproef">Klaar om te herproeven</option>
         </select>
         <select style={S.select} value={sort} onChange={(e) => setSort(e.target.value)}>
           <option value="producer">Sorteer: naam</option>
@@ -1690,14 +1748,15 @@ export default function App() {
       {/* hidden inputs */}
       <input ref={fileImport} type="file" accept=".xlsx,.xls,.csv" hidden onChange={onImportFile} />
       <input ref={filePhoto} type="file" accept="image/*" multiple hidden onChange={onPhotoFiles} />
-      <input ref={filePhotoOne} type="file" accept="image/*" multiple hidden onChange={onPhotoOneFiles} />
       <input ref={filePhotoAdd} type="file" accept="image/*" multiple hidden onChange={onPhotoAddFiles} />
 
       {/* ---- modals ---- */}
       {detail && <DetailModal b={detail} scale={scale} onClose={() => setDetail(null)}
         onEdit={() => { setEdit(detail); setDetail(null); }}
         onEnrich={() => enrichDetail(detail)} onSave={updateBottle}
-        onPatch={(patch) => patchBottle(detail.id, patch)} />}
+        onPatch={(patch) => patchBottle(detail.id, patch)}
+        onGedronken={() => setDrinkFles(detail)} />}
+      {drinkFles && <DrinkModal b={drinkFles} onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
         onMultiVintage={(e) => { setBulkInit({ producer: e.producer, name: e.name, region: e.region, country: e.country, color: e.color, grape: e.grape, location: e.location, supplier: e.supplier }); setEdit(null); setShowBulk(true); }} />}
       {importPending && <ImportModal rows={importPending} onApply={applyImport} onCancel={() => setImportPending(null)} />}
@@ -1861,13 +1920,13 @@ function EditModal({ edit, setEdit, onSave, onMultiVintage }) {
         <h3 style={S.modalTitle}>{edit.id ? "Fles bewerken" : "Nieuwe fles"}</h3>
         <button style={S.iconBtn} onClick={() => setEdit(null)}><X size={18} /></button>
       </div>
-      <BottleFields v={edit} on={set} />
       {onMultiVintage && (
-        <button style={{ ...S.btnGhost, width: "100%", marginTop: 12, justifyContent: "center" }}
+        <button style={{ ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "center" }}
           onClick={() => onMultiVintage(edit)} disabled={!canMulti}>
           <Layers size={15} /> Meerdere jaargangen van deze wijn
         </button>
       )}
+      <BottleFields v={edit} on={set} />
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={() => setEdit(null)}>Annuleren</button>
         <button style={S.btnPrimary} onClick={onSave}><Check size={15} /> Opslaan</button>
@@ -2285,6 +2344,78 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
   );
 }
 
+// ---------- fles gedronken ----------
+function DrinkModal({ b, onBevestig, onClose }) {
+  const maxAantal = Math.max(1, num(b.quantity) || 1);
+  const vandaag = new Date().toISOString().slice(0, 10);
+  const [aantal, setAantal] = useState(1);
+  const [datum, setDatum] = useState(vandaag);
+  const [herproef, setHerproef] = useState("");
+  const [antw, setAntw] = useState({});
+  const set = (k, v) => setAntw((a) => ({ ...a, [k]: v }));
+  const waarde = effVal(b).v;
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={S.modalHead}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={S.modalTitle}>Fles gedronken</h3>
+          <div style={{ ...S.rowSub, marginTop: 3 }}>{[b.producer, b.name, b.vintage].filter(Boolean).join(" · ")}</div>
+        </div>
+        <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
+      </div>
+
+      <div style={S.form}>
+        <div style={S.formRow}>
+          <div style={{ ...S.field, flex: "0 0 auto" }}>
+            <span style={S.fieldLabel}>Hoeveel flessen</span>
+            <QtyStepper value={aantal} onChange={(v) => setAantal(Math.min(maxAantal, Math.max(1, parseInt(v) || 1)))} big />
+          </div>
+          <label style={{ ...S.field, flex: 1 }}>
+            <span style={S.fieldLabel}>Wanneer</span>
+            <input style={S.input} type="date" value={datum} onChange={(e) => setDatum(e.target.value)} />
+          </label>
+        </div>
+        <div style={{ ...S.mapCaption, marginTop: -4 }}>
+          Er blijven er {Math.max(0, maxAantal - aantal)} over{waarde > 0 ? ` · samen ${eur(waarde * aantal)}` : ""}
+        </div>
+
+        {DRINK_VRAGEN.map((v) => (
+          <label key={v.k} style={S.field}>
+            <span style={S.fieldLabel}>{v.label}</span>
+            {v.keuzes ? (
+              <select style={S.input} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)}>
+                {v.keuzes.map((k) => <option key={k} value={k}>{k || "—"}</option>)}
+              </select>
+            ) : v.groot ? (
+              <textarea style={{ ...S.input, minHeight: 92, resize: "vertical", lineHeight: 1.5 }} rows={3}
+                placeholder={v.hint} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)} />
+            ) : (
+              <input style={S.input} type={v.getal ? "number" : "text"} inputMode={v.getal ? "decimal" : undefined}
+                placeholder={v.hint} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)} />
+            )}
+          </label>
+        ))}
+
+        <label style={S.field}>
+          <span style={S.fieldLabel}>Opnieuw proeven over</span>
+          <select style={S.input} value={herproef} onChange={(e) => setHerproef(e.target.value)}>
+            <option value="">niet van toepassing</option>
+            {[1, 2, 3, 5, 10].map((j) => <option key={j} value={j}>{j} jaar ({NOW + j})</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div style={S.modalFoot}>
+        <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
+        <button style={S.btnPrimary} onClick={() => onBevestig({ aantal, datum, herproef, antw })}>
+          <Check size={15} /> {aantal} fles{aantal > 1 ? "sen" : ""} afvinken
+        </button>
+      </div>
+    </Overlay>
+  );
+}
+
 // ---------- melding (anoniem) ----------
 function FeedbackModal({ onClose }) {
   const [text, setText] = useState("");
@@ -2379,11 +2510,12 @@ function RestoreModal({ onRestore, onClose }) {
 }
 
 // ---------- detail card ----------
-function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch }) {
+function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onGedronken }) {
   const sc = (px) => Math.round(px * scale);
   const st = drinkStatus(b);
   const ev = effVal(b);
   const mat = maturity(b);
+  const log = Array.isArray(b.drinkLog) ? b.drinkLog : [];
   const lat = num(b.lat), lng = num(b.lng);
   const hasCoords = lat !== 0 && lng !== 0;
   const osmLink = hasCoords ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=9/${lat}/${lng}` : null;
@@ -2518,10 +2650,35 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch }) {
         </div>
         {b.notes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Notities</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p></div>}
 
+        {(log.length > 0 || num(b.herproefOp) > 0) && (
+          <div>
+            <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Logboek</div>
+            {num(b.herproefOp) > 0 && (
+              <p style={{ ...S.bodyText, fontSize: sc(13), color: num(b.herproefOp) <= NOW ? "var(--gold)" : "var(--ink-dim)" }}>
+                {num(b.herproefOp) <= NOW ? `Klaar om opnieuw te proeven (sinds ${b.herproefOp}).` : `Opnieuw proeven vanaf ${b.herproefOp}.`}
+              </p>
+            )}
+            {log.slice().reverse().map((e, i) => (
+              <div key={i} style={{ ...S.bodyText, fontSize: sc(13), marginTop: 6 }}>
+                <span style={{ color: "var(--ink)" }}>{e.d} · {num(e.n) || 1} fles{(num(e.n) || 1) > 1 ? "sen" : ""}</span>
+                {num(e.v) > 0 && <span style={{ color: "var(--ink-dim)" }}> · {eur(num(e.v) * (num(e.n) || 1))}</span>}
+                {DRINK_VRAGEN.filter((v) => e[v.k]).map((v) => (
+                  <div key={v.k} style={{ color: "var(--ink-dim)", marginLeft: 2 }}>{v.label}: {e[v.k]}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
         <WineChat b={b} sc={sc} />
       </div>
 
       <div style={S.modalFoot}>
+        {onGedronken && (num(b.quantity) || 0) > 0 && (
+          <button style={{ ...S.btnGhost, borderColor: "var(--wine-bright)", color: "var(--ink)" }} onClick={onGedronken}>
+            <Wine size={15} /> Gedronken
+          </button>
+        )}
         <button style={S.btnGhost} onClick={onEnrich} disabled={b._loading}>
           {b._loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} Vernieuwen
         </button>
