@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v26";
+const APP_VERSION = "kelder-v27";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -377,6 +377,13 @@ const BEDRAG_KAAL = /\b\d{1,3}(?:[.\s]\d{3})+[,.]\d{2}\b|\b\d+[,.]\d{2}\b/g;
 const PRIJSCONTEXT = /prijs|prijzen|kopen|bestel|per\s*fles|voorraad|winkel|vanaf|aanbieding|€|\beur\b/i;
 const VERZENDKOST = /verzend|leverings?kost|shipping|porto|bezorg/i;
 const GEEN_PRIJS_ACHTER = /^\s*(punten|points|score|beoordel|rating|\/\s*(5|10|20|100)\b|%)/i;
+// Bedragen in een andere munt worden NIET omgerekend maar geweerd: een verkeerde
+// omrekening is schadelijker dan geen prijs, en een prijs uit de VS zegt met
+// verzending en invoerrechten toch weinig over wat een fles hier kost.
+const VREEMDE_MUNT = /[$£¥]|\b(usd|gbp|chf|jpy|cad|aud|dollars?|pounds?|francs?)\b/i;
+// Handelaars noteren vaak exclusief btw; dat is niet wat een fles in de winkel kost.
+const EXCL_BTW = /excl\.?\s*(btw|b\.?t\.?w|vat|tax)|exclusief\s*btw|ex\.?\s*btw|zonder\s*btw|\+\s*21\s*%/i;
+const BTW_TARIEF = 1.21;   // België
 
 function snippetPrices(items, b) {
   const want = keyTokens(wineTerm(b));
@@ -390,13 +397,19 @@ function snippetPrices(items, b) {
     const jaar = (tekst.match(/\b(19[5-9]\d|20[0-4]\d)\b/g) || []).map(Number);
     const gezien = new Set();
     const voegToe = (ruw, index, lengte) => {
+      const voor = tekst.slice(Math.max(0, index - 40), index);
+      const na = tekst.slice(index + lengte, index + lengte + 25);
       // verzendkosten en puntenscores zijn geen flesprijs
-      if (VERZENDKOST.test(tekst.slice(Math.max(0, index - 40), index))) return;
-      if (GEEN_PRIJS_ACHTER.test(tekst.slice(index + lengte, index + lengte + 14))) return;
-      const p = parseAmount(ruw);
+      if (VERZENDKOST.test(voor)) return;
+      if (GEEN_PRIJS_ACHTER.test(na)) return;
+      // andere munt dan euro: overslaan in plaats van gokken
+      if (VREEMDE_MUNT.test(tekst.slice(Math.max(0, index - 12), index)) || VREEMDE_MUNT.test(na.slice(0, 8))) return;
+      let p = parseAmount(ruw);
+      const zonderBtw = EXCL_BTW.test(voor) || EXCL_BTW.test(na);
+      if (zonderBtw) p = Math.round(p * BTW_TARIEF * 100) / 100;
       if (p >= 3 && p <= 50000 && !gezien.has(p)) {
         gezien.add(p);
-        out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar });
+        out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar, btw: zonderBtw });
       }
     };
     let m;
@@ -435,6 +448,7 @@ function pickPrice(offers, snips, b) {
   return {
     price: prijs, n: pool.length, exact: exact.length > 0, url: dichtst ? dichtst.url : "",
     years: [...new Set(pool.flatMap((p) => p.years))].sort(), bronnen,
+    btw: pool.some((p) => p.btw),   // zat er een prijs excl. btw bij die we hebben bijgeteld?
   };
 }
 
@@ -686,6 +700,7 @@ async function lookupWineFull(b) {
 // De bron-URL komt altijd uit onze eigen lijst (via het nummer van het
 // zoekresultaat), nooit uit de tekst van het model: zo kan ze niet verzonnen zijn.
 function applyMarketPrice(res, mp, b, items) {
+  const btwNoot = mp && mp.btw ? ", btw bijgeteld" : "";
   const found = num(res.retailPrice);
   const src = String(res.priceSource || "").trim();
   const idx = parseInt(res.priceSourceIndex);
@@ -696,14 +711,15 @@ function applyMarketPrice(res, mp, b, items) {
     res.priceNote = mp.exact
       ? `mediaan van ${mp.n} winkelprijzen voor jaargang ${b.vintage} (${waar})`
       : `mediaan van ${mp.n} winkelprijzen, jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")} — ter indicatie`;
+    res.priceNote += btwNoot;
     res.priceUrl = mp.url || "";
   } else if (mp && mp.exact) {
     res.retailPrice = mp.price;
-    res.priceNote = `winkelprijs jaargang ${b.vintage} (${mp.bronnen.join(" en ")}, 75 cl)`;
+    res.priceNote = `winkelprijs jaargang ${b.vintage} (${mp.bronnen.join(" en ")}, 75 cl)` + btwNoot;
     res.priceUrl = mp.url || "";
   } else if (mp) {
     res.retailPrice = mp.price;
-    res.priceNote = `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie`;
+    res.priceNote = `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie` + btwNoot;
     res.priceUrl = mp.url || "";
   } else if (found > 0 && src) {
     const py = parseInt(res.priceVintage), y = parseInt(b.vintage);
