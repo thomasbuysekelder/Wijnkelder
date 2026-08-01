@@ -111,6 +111,11 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   maar één letter tegelijk typen. `ZoekRij` staat daarom op modulehoogte.
 
 ## Vensters en het toetsenbord
+- Met een open toetsenbord blijft er nog een derde van het scherm over. `useToetsenbord()`
+  meldt dat; het drinkvenster verbergt dan zijn ondertitel en zijn knoppenbalk, zodat
+  het invulwerk de plaats krijgt. Doe dat ook in nieuwe lange formulieren.
+- Mislukt het bewaren (toestel vol), dan staat dat BOVENAAN in het rood. Laat een
+  mislukte opslag nooit stil voorbijgaan: je merkt het anders pas als het te laat is.
 - iOS verkleint het zichtbare scherm wanneer het toetsenbord opengaat, maar `100vh`
   blijft even groot: de kop schoof weg en de knoppenbalk verdween onder de toetsen.
   `useZichtbareHoogte()` meet `window.visualViewport` en zet `--vvh` en `--vvtop`.
@@ -268,6 +273,10 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   smaak, evolutie) die als lijstjes bewaard worden, zodat er later op geteld kan
   worden. Het veld "eigen woorden" vangt op wat er niet tussen staat. Zet nieuwe
   aromawoorden altijd in `DRINK_VRAGEN`, nooit los in een component.
+- Bij ELK woordenveld kan je een EIGEN woord toevoegen. Die woorden staan onder
+  `wijnkelder-eigen-woorden` (apart van de kelder, zodat een herstel ze niet wist)
+  en komen bij elke volgende proeving weer als chip terug, met een kruisje om ze
+  te schrappen. Ze gaan gewoon mee in de lijstjes, dus ook naar de sommelier.
 - `RIJPHEID` zet mijn oordeel ("mooi op dronk", "kort bewaarpotentieel", "over de
   piek") in dezelfde keuzelijst als de termijn in jaren; beide voeden `herproefOp`.
 - `DRINK_VRAGEN` is het vaste draaiboek. Alles mag leeg blijven; wat leeg is, is

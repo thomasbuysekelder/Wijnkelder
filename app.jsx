@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v59";
+const APP_VERSION = "kelder-v60";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -207,6 +207,20 @@ function decodeBackup(text) {
 const PREV_KEY = STORAGE_KEY + "-vorige";
 // voorkeur, geen kelderdata: aparte sleutel zodat de kelder er nooit door geraakt wordt
 const NAAM_KEY = "wijnkelder-naam";
+// Zelf toegevoegde proefwoorden, per veld uit DRINK_VRAGEN. Ze staan apart van de
+// kelder, zodat een herstel van de flessen ze nooit kan wissen.
+const WOORDEN_KEY = "wijnkelder-eigen-woorden";
+
+function laadEigenWoorden() {
+  try {
+    const o = JSON.parse((LS && LS.getItem(WOORDEN_KEY)) || "{}");
+    return o && typeof o === "object" ? o : {};
+  } catch { return {}; }
+}
+
+function bewaarEigenWoorden(o) {
+  try { if (LS) LS.setItem(WOORDEN_KEY, JSON.stringify(o)); } catch { /* vol toestel */ }
+}
 const STANDAARDNAAM = "Wijnkelder";
 
 // Elke fles krijgt gegarandeerd een eigen id: zonder id wist het verwijderen van
@@ -1453,6 +1467,7 @@ export default function App() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [drinkFles, setDrinkFles] = useState(null);
   useZichtbareHoogte();
+  const [opslagFout, setOpslagFout] = useState(false);
   const [showKaart, setShowKaart] = useState(false);
   const [showLog, setShowLog] = useState(false);
   // Een fles die je elders dronk staat wel in de gegevens (voor het logboek en de
@@ -1494,7 +1509,10 @@ export default function App() {
   // single source of truth for saving: persist on every change to bottles
   useEffect(() => {
     if (!loaded) return;
-    saveBottles(bottles).then((ok) => { if (ok !== false) setSavedAt(new Date()); });
+    saveBottles(bottles).then((ok) => {
+      if (ok !== false) { setSavedAt(new Date()); setOpslagFout(false); return; }
+      setOpslagFout(true);
+    });
   }, [bottles, loaded]);
   // extra safety: also save when the app is hidden or closed
   useEffect(() => {
@@ -1937,7 +1955,12 @@ export default function App() {
             ) : (
               <span style={{ ...S.brandName, cursor: "pointer" }} onClick={() => setNaamBewerken(true)} title="Tik om de naam te wijzigen">{appNaam}</span>
             )}
-            {savedAt && <span style={S.savedTag}><Check size={11} /> bewaard {savedAt.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit" })}</span>}
+            {opslagFout && (
+              <span style={{ ...S.savedTag, color: "var(--red)", borderColor: "var(--red)" }}>
+                <AlertCircle size={11} /> niet bewaard — toestel vol
+              </span>
+            )}
+            {!opslagFout && savedAt && <span style={S.savedTag}><Check size={11} /> bewaard {savedAt.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit" })}</span>}
           </div>
           <div style={S.actions}>
             <button style={S.btnPrimary} onClick={() => filePhoto.current.click()}><Camera size={15} /> Foto</button>
@@ -2439,6 +2462,21 @@ function useZichtbareHoogte() {
   }, []);
 }
 
+// Staat het toetsenbord open? Dan is er maar een derde van het scherm over en
+// moeten kop en knoppenbalk wijken voor het invulwerk.
+function useToetsenbord() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const kijk = () => setOpen(vv.height < window.innerHeight * 0.75);
+    kijk();
+    vv.addEventListener("resize", kijk);
+    return () => vv.removeEventListener("resize", kijk);
+  }, []);
+  return open;
+}
+
 function Overlay({ children, onClose, small, wide, full }) {
   const box = full
     ? { ...S.modal, ...S.modalFull }
@@ -2706,18 +2744,47 @@ function SommelierModal({ bottles, alles, thread, setThread, onClose }) {
 }
 
 // ---------- fles uit de kelder ----------
-function KeuzeChips({ waarden, gekozen, onWissel }) {
+function KeuzeChips({ waarden, gekozen, onWissel, eigen = [], onWisEigen, onNieuw }) {
+  const [nieuw, setNieuw] = useState("");
+  const voegToe = () => {
+    const w = nieuw.trim().toLowerCase();
+    if (!w || !onNieuw) return;
+    onNieuw(w);
+    setNieuw("");
+  };
+  const chip = (w, isEigen) => {
+    const aan = gekozen.includes(w);
+    const stijl = { ...S.chipKeuze, ...(aan ? S.chipKeuzeAan : null), ...(isEigen ? S.chipEigen : null) };
+    if (!isEigen || !onWisEigen) {
+      return (
+        <button key={w} type="button" onClick={() => onWissel(w)} style={stijl}>
+          {aan ? "✓ " : ""}{w}
+        </button>
+      );
+    }
+    return (
+      <span key={w} style={{ ...stijl, display: "inline-flex", alignItems: "center", gap: 8, paddingRight: 6 }}>
+        <button type="button" onClick={() => onWissel(w)} style={S.chipTekst}>{aan ? "✓ " : ""}{w}</button>
+        <button type="button" onClick={() => onWisEigen(w)} aria-label={`${w} schrappen`} style={S.chipKruis}>×</button>
+      </span>
+    );
+  };
   return (
-    <div style={S.chipKeuzeRij}>
-      {waarden.map((w) => {
-        const aan = gekozen.includes(w);
-        return (
-          <button key={w} type="button" onClick={() => onWissel(w)}
-            style={{ ...S.chipKeuze, ...(aan ? S.chipKeuzeAan : null) }}>
-            {aan ? "✓ " : ""}{w}
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={S.chipKeuzeRij}>
+        {waarden.map((w) => chip(w, false))}
+        {eigen.filter((w) => !waarden.includes(w)).map((w) => chip(w, true))}
+      </div>
+      {onNieuw && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input style={{ ...S.input, flex: 1, height: 38 }} value={nieuw} placeholder="eigen woord toevoegen…"
+            onChange={(e) => setNieuw(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); voegToe(); } }} />
+          <button style={{ ...S.btnGhost, height: 38 }} onClick={voegToe} disabled={!nieuw.trim()}>
+            <Plus size={15} /> Bewaren
           </button>
-        );
-      })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2737,6 +2804,29 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
   const [wijn, setWijn] = useState({ producer: b.producer || "", name: b.name || "", vintage: b.vintage || "", color: b.color || "rood" });
   const [kostte, setKostte] = useState("");
   const setW = (k, v) => setWijn((w) => ({ ...w, [k]: v }));
+  const toetsenbord = useToetsenbord();
+  const [eigenWoorden, setEigenWoorden] = useState(laadEigenWoorden);
+  const voegWoordToe = (veld, woord) => {
+    setEigenWoorden((o) => {
+      const lijst = Array.isArray(o[veld]) ? o[veld] : [];
+      const nieuw = lijst.includes(woord) ? o : { ...o, [veld]: [...lijst, woord] };
+      bewaarEigenWoorden(nieuw);
+      return nieuw;
+    });
+    // meteen aanvinken: je typte het net omdat je het geproefd hebt
+    setAntw((a) => {
+      const lijst = Array.isArray(a[veld]) ? a[veld] : [];
+      return lijst.includes(woord) ? a : { ...a, [veld]: [...lijst, woord] };
+    });
+  };
+  const wisWoord = (veld, woord) => {
+    setEigenWoorden((o) => {
+      const nieuw = { ...o, [veld]: (o[veld] || []).filter((w) => w !== woord) };
+      bewaarEigenWoorden(nieuw);
+      return nieuw;
+    });
+    setAntw((a) => ({ ...a, [veld]: (a[veld] || []).filter((w) => w !== woord) }));
+  };
   const fotoVeld = useRef();
   const [leest, setLeest] = useState(false);
   const [kiezen, setKiezen] = useState(false);
@@ -2771,11 +2861,13 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
       <div style={S.modalHead}>
         <div style={{ minWidth: 0 }}>
           <h3 style={S.modalTitle}>{nieuw ? "Elders gedronken" : alleenProeven ? "Proefnotitie" : "Fles uit de kelder"}</h3>
-          <div style={{ ...S.rowSub, marginTop: 3 }}>
-            {nieuw
-              ? "Een fles die niet in je kelder lag — op restaurant, bij vrienden, op een proeverij."
-              : [b.producer, b.name, b.vintage].filter(Boolean).join(" · ")}
-          </div>
+          {!toetsenbord && (
+            <div style={{ ...S.rowSub, marginTop: 3 }}>
+              {nieuw
+                ? "Een fles die niet in je kelder lag — op restaurant, bij vrienden, op een proeverij."
+                : [b.producer, b.name, b.vintage].filter(Boolean).join(" · ")}
+            </div>
+          )}
         </div>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
       </div>
@@ -2864,7 +2956,10 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
             <span style={S.fieldLabel}>{v.label}</span>
             {v.chips ? (
               <KeuzeChips waarden={v.chips} gekozen={Array.isArray(antw[v.k]) ? antw[v.k] : []}
-                onWissel={(w) => wissel(v.k, w)} />
+                onWissel={(w) => wissel(v.k, w)}
+                eigen={eigenWoorden[v.k] || []}
+                onNieuw={(w) => voegWoordToe(v.k, w)}
+                onWisEigen={(w) => wisWoord(v.k, w)} />
             ) : v.keuzes ? (
               <select style={S.input} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)}>
                 {v.keuzes.map((k) => <option key={k} value={k}>{k || "—"}</option>)}
@@ -2895,7 +2990,9 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
         )}
       </div>
 
-      <div style={S.modalFoot}>
+      {/* Met een open toetsenbord blijft er maar een derde van het scherm over. De
+          knoppenbalk wijkt dan, zodat je het veld ziet waar je in typt. */}
+      <div style={{ ...S.modalFoot, ...(toetsenbord ? { display: "none" } : null) }}>
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
         <button style={S.btnPrimary}
           disabled={nieuw && !wijn.producer && !wijn.name}
@@ -3836,6 +3933,9 @@ const S = {
 
   chipKeuzeRij: { display: "flex", flexWrap: "wrap", gap: 6 },
   chipKeuze: { background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "7px 11px", borderRadius: 999, fontSize: 13.5, cursor: "pointer", lineHeight: 1.2 },
+  chipEigen: { borderStyle: "dashed", borderColor: "var(--gold-dim)" },
+  chipTekst: { background: "transparent", border: "none", color: "inherit", font: "inherit", padding: 0, cursor: "pointer" },
+  chipKruis: { background: "transparent", border: "none", color: "var(--ink-dim)", fontSize: 16, lineHeight: 1, padding: "0 2px", cursor: "pointer" },
   chipKeuzeAan: { background: "rgba(123,30,43,.35)", borderColor: "var(--wine-bright)", color: "var(--ink)", fontWeight: 600 },
   chips: { display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" },
   chip: { display: "inline-flex", alignItems: "center", height: 28, fontSize: 12, border: "1px solid var(--line2)", color: "var(--ink2)", padding: "0 12px", borderRadius: 20, background: "var(--bg2)", textTransform: "capitalize", letterSpacing: 0.2, whiteSpace: "nowrap" },
