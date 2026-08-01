@@ -4,13 +4,13 @@ import {
   Search, Plus, Upload, Download, Camera, X, Wine, Trash2,
   Pencil, Check, Loader2, FileSpreadsheet, AlertCircle, ArrowUpDown,
   MapPin, ExternalLink, MoreHorizontal, Layers, Save, Clipboard,
-  MessageCircle, Send, MessageSquare, RefreshCw
+  MessageCircle, Send, MessageSquare, RefreshCw, Eye, EyeOff
 } from "lucide-react";
 
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v39";
+const APP_VERSION = "kelder-v40";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -149,6 +149,8 @@ function decodeBackup(text) {
 // vóór elke overschrijving gaat de vorige inhoud naar PREV_KEY. Zo is er altijd een
 // vangnet, ook als er ooit iets misgaat tijdens het bewaren.
 const PREV_KEY = STORAGE_KEY + "-vorige";
+// voorkeur, geen kelderdata: aparte sleutel zodat de kelder er nooit door geraakt wordt
+const GELD_KEY = "wijnkelder-toon-geld";
 
 // Elke fles krijgt gegarandeerd een eigen id: zonder id wist het verwijderen van
 // één fles ze allemaal, omdat ze dan niet meer uit elkaar te houden zijn.
@@ -1161,6 +1163,10 @@ export default function App() {
   const [bulkInit, setBulkInit] = useState(null);
   const [showSomm, setShowSomm] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  // financiële cijfers standaard verborgen; de keuze blijft bewaard
+  const [toonGeld, setToonGeld] = useState(false);
+  useEffect(() => { try { if (LS && LS.getItem(GELD_KEY) === "1") setToonGeld(true); } catch {} }, []);
+  const wisselGeld = () => setToonGeld((v) => { const n = !v; try { if (LS) LS.setItem(GELD_KEY, n ? "1" : "0"); } catch {} return n; });
   const [sommThread, setSommThread] = useState([]); // [{q, a}] — blijft bewaard tijdens de sessie
 
   const fileImport = useRef();
@@ -1554,16 +1560,21 @@ export default function App() {
         </div>
 
         <div style={S.ledger}>
-          <Stat label="In kelder" value={`${stats.flessen} flessen`} sub={`${stats.wijnen} wijnen`} />
-          <Stat label="Aankoop" value={eur(stats.cost)} />
-          <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />
-          <Stat
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, minWidth: 0 }}>
+            <Stat label="In kelder" value={`${stats.flessen} flessen`} sub={`${stats.wijnen} wijnen`} />
+            <button style={S.geldKnop} onClick={wisselGeld} aria-label={toonGeld ? "Bedragen verbergen" : "Bedragen tonen"}>
+              {toonGeld ? <EyeOff size={14} /> : <Eye size={14} />} {toonGeld ? "verbergen" : "waarde"}
+            </button>
+          </div>
+          {toonGeld && <Stat label="Aankoop" value={eur(stats.cost)} />}
+          {toonGeld && <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />}
+          {toonGeld && <Stat
             label="Ongerealiseerd"
             value={stats.vgFlessen ? `${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}` : "—"}
             sub={stats.vgFlessen
               ? `${stats.gain >= 0 ? "+" : ""}${stats.pct.toFixed(1)}%${stats.volledig ? "" : ` · op ${stats.vgFlessen} van ${stats.flessen} flessen`}`
               : "nog geen fles met aankoop én waarde"}
-            accent={!stats.vgFlessen ? undefined : stats.gain >= 0 ? "green" : "red"} />
+            accent={!stats.vgFlessen ? undefined : stats.gain >= 0 ? "green" : "red"} />}
         </div>
       </header>
 
@@ -2711,6 +2722,7 @@ const S = {
   tsBtn: { width: 36, background: "transparent", border: "none", color: "var(--ink2)", cursor: "pointer", display: "grid", placeItems: "center", lineHeight: 1, fontFamily: "'Spectral',serif" },
 
   // sommelier: scrollend antwoordgebied, invoerveld blijft onderaan staan
+  geldKnop: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", border: "1px solid var(--line)", color: "var(--ink-dim)", padding: "4px 10px", borderRadius: 20, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   bewaardTag: { position: "absolute", right: 6, top: -16, fontSize: 10, color: "var(--green)", display: "inline-flex", alignItems: "center", gap: 3 },
   bulkRij: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid var(--bg3)" },
   chatScroll: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", padding: "2px 2px 4px" },
