@@ -291,13 +291,87 @@ async function vivino(wine) {
   } catch { return null; }
 }
 
+// ---------- prijzen van de winkelpagina zelf ----------
+// Webshops zetten hun prijs machineleesbaar in de pagina (schema.org/Product met
+// offers.price). Dat is betrouwbaarder dan tekstherkenning: het is een veld, geen
+// zin. We doen dit alleen wanneer de gewone bronnen niets opleverden.
+const GEEN_WINKEL = /wikipedia\.org|vivino\.com|facebook\.|instagram\.|youtube\.|reddit\.|cellartracker|wine-searcher/i;
+
+function prijsUitHtml(html) {
+  const uit = [];
+  for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const loop = (o) => {
+        if (!o || typeof o !== "object") return;
+        if (o.offers) {
+          for (const aanbod of [].concat(o.offers)) {
+            if (!aanbod || typeof aanbod !== "object") continue;
+            const p = parseFloat(aanbod.price ?? (aanbod.priceSpecification || {}).price);
+            const spec = aanbod.priceSpecification || {};
+            if (p > 0) uit.push({
+              price: p,
+              currency: String(aanbod.priceCurrency || spec.priceCurrency || "EUR").toUpperCase(),
+              naam: String(o.name || ""),
+              exclBtw: spec.valueAddedTaxIncluded === false,
+            });
+          }
+        }
+        Object.values(o).forEach(loop);
+      };
+      loop(JSON.parse(m[1].trim()));
+    } catch { /* volgend blok */ }
+  }
+  if (uit.length) return uit;
+  // terugval: meta-tags zoals product:price:amount
+  const meta = /(?:product:price:amount|og:price:amount)["'][^>]*content=["']([^"']+)/i.exec(html)
+    || /itemprop=["']price["'][^>]*content=["']([^"']+)/i.exec(html);
+  if (meta) {
+    const p = parseFloat(String(meta[1]).replace(",", "."));
+    const mm = /(?:product:price:currency|og:price:currency)["'][^>]*content=["']([A-Z]{3})/i.exec(html);
+    if (p > 0) uit.push({ price: p, currency: mm ? mm[1].toUpperCase() : "EUR", naam: "", exclBtw: false });
+  }
+  return uit;
+}
+
+async function paginaPrijzen(urls, term) {
+  const wil = vTokens(term);
+  const kandidaten = (urls || []).filter((u) => /^https?:\/\//.test(u) && !GEEN_WINKEL.test(u)).slice(0, 3);
+  const resultaten = await Promise.all(kandidaten.map(async (u) => {
+    try {
+      const c = new AbortController();
+      const to = setTimeout(() => c.abort(), 7000);
+      const r = await fetch(u, { headers: { "user-agent": UA, accept: "text/html" }, signal: c.signal, redirect: "follow" });
+      clearTimeout(to);
+      if (!r.ok) return null;
+      const html = (await r.text()).slice(0, 400000);
+      const titel = strip((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || "");
+      const gevonden = prijsUitHtml(html);
+      if (!gevonden.length) return null;
+      // gaat deze pagina wel over DEZE wijn?
+      const hooi = vTokens(`${titel} ${gevonden[0].naam}`);
+      if (wil.length && wil.filter((t) => hooi.includes(t)).length / wil.length < 0.6) return null;
+      const beste = gevonden[0];
+      return { price: beste.price, currency: beste.currency, exclBtw: beste.exclBtw, url: u, title: titel.slice(0, 120) };
+    } catch { return null; }
+  }));
+  return resultaten.filter(Boolean);
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).json({ error: "Alleen POST" }); return; }
   const body = req.body || {};
   const q = String(body.query || "").slice(0, 200);
   const wine = body.wine && typeof body.wine === "object" ? body.wine : null;
   const wiki = String(body.wiki || "").slice(0, 120);
-  if (!q && !wine && !wiki) { res.status(400).json({ error: "query, wine of wiki ontbreekt" }); return; }
+  const pages = Array.isArray(body.pages) ? body.pages.slice(0, 6).map(String) : null;
+  if (!q && !wine && !wiki && !pages) { res.status(400).json({ error: "query, wine, wiki of pages ontbreekt" }); return; }
+
+  // aparte modus: enkel winkelpagina's openen en hun prijs uitlezen
+  if (pages) {
+    const prijzen = await paginaPrijzen(pages, String(body.term || ""));
+    res.status(200).json({ results: [], offers: [], wiki: null, pagePrices: prijzen, rates: await ecbKoersen(), sources: { pages: prijzen.length ? "ok" : "leeg" } });
+    return;
+  }
   try {
     // Brave eerst; ontbreekt de sleutel of faalt hij, dan DuckDuckGo als terugval.
     const web = async () => {

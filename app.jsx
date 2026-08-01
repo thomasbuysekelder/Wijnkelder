@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v32";
+const APP_VERSION = "kelder-v33";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -311,12 +311,12 @@ const SEARCH_URL = "/api/search";
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
 // De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
 // verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
-async function fetchSearch({ query, wine, wiki, prefix = "", max = 2600 }) {
+async function fetchSearch({ query, wine, wiki, pages, term, prefix = "", max = 2600 }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, wine, wiki }),
+      body: JSON.stringify({ query, wine, wiki, pages, term }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
@@ -326,6 +326,7 @@ async function fetchSearch({ query, wine, wiki, prefix = "", max = 2600 }) {
       offers: Array.isArray(data && data.offers) ? data.offers : [],
       wiki: (data && data.wiki) || null,
       rates: (data && data.rates) || null,
+      pagePrices: (data && data.pagePrices) || [],
       sources: (data && data.sources) || {},
     };
   } catch { return { text: "", items: [], offers: [], wiki: null, sources: { web: "fout", vivino: "fout" } }; }
@@ -655,7 +656,34 @@ async function lookupWineFull(b) {
   // prijzen uit ALLE resultaten (ook die van de recensiezoekopdracht: webshops
   // duiken daar evengoed op) samen met de Vivino-aanbiedingen
   const snips = snippetPrices([...(items || []), ...(rev.items || [])], b, main.rates);
-  const mp = pickPrice(offers, snips, b);
+  let mp = pickPrice(offers, snips, b);
+  // Nog geen prijs? Dan de winkelpagina's zelf openen. Webshops zetten hun prijs
+  // machineleesbaar in de pagina, ook wanneer het zoekfragment ze niet toont.
+  if (!mp) {
+    const urls = [...(items || []), ...(rev.items || [])].map((i) => i.url).filter(Boolean);
+    if (urls.length) {
+      const pg = await fetchSearch({ pages: urls, term: naam });
+      const koersen = pg.rates || main.rates;
+      const uitPaginas = (pg.pagePrices || []).map((p) => {
+        let prijs = num(p.price);
+        const munt = String(p.currency || "EUR").toUpperCase();
+        if (munt !== "EUR") {
+          const koers = koersen && koersen[munt];
+          if (!koers) return null;                       // geen koers = geen prijs
+          prijs = prijs / koers;
+        }
+        if (p.exclBtw) prijs = prijs * BTW_TARIEF;
+        prijs = Math.round(prijs * 100) / 100;
+        if (!(prijs >= 3 && prijs <= 50000)) return null;
+        return {
+          price: prijs, url: p.url || "", title: p.title || "",
+          years: (String(p.title || "").match(/\b(19[5-9]\d|20[0-4]\d)\b/g) || []).map(Number),
+          btw: !!p.exclBtw, munt: munt === "EUR" ? "" : munt,
+        };
+      }).filter(Boolean);
+      if (uitPaginas.length) mp = pickPrice(offers, uitPaginas, b);
+    }
+  }
   const vr = vivinoRating(offers, b);
   const lines = offerLines(offers, b);
   const priceCtx = mp
