@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v18";
+const APP_VERSION = "kelder-v19";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1033,13 +1033,19 @@ export default function App() {
 
   const stats = useMemo(() => {
     let flessen = 0, cost = 0, value = 0;
+    // Rendement mag ALLEEN berekend worden op flessen waarvan zowel de aankoopprijs
+    // als de waarde gekend is. Anders vergelijk je de aankoop van je hele kelder met
+    // de waarde van een handvol flessen, en toont de app een verlies dat er niet is.
+    let vgKost = 0, vgWaarde = 0, vgFlessen = 0;
     for (const b of bottles) {
       const q = num(b.quantity) || 0;
-      flessen += q; cost += money(b.purchasePrice) * q; value += effVal(b).v * q;
+      const k = money(b.purchasePrice), w = effVal(b).v;
+      flessen += q; cost += k * q; value += w * q;
+      if (k > 0 && w > 0) { vgKost += k * q; vgWaarde += w * q; vgFlessen += q; }
     }
-    const gain = value - cost;
-    const pct = cost > 0 ? (gain / cost) * 100 : 0;
-    return { flessen, wijnen: bottles.length, cost, value, gain, pct };
+    const gain = vgWaarde - vgKost;
+    const pct = vgKost > 0 ? (gain / vgKost) * 100 : 0;
+    return { flessen, wijnen: bottles.length, cost, value, gain, pct, vgFlessen, volledig: vgFlessen === flessen };
   }, [bottles]);
 
   // ---- CRUD ----
@@ -1050,17 +1056,17 @@ export default function App() {
     const cleaned = { ...cleanBottle(b), color: String(b.color || "rood").toLowerCase() };
     const existing = findDuplicate(bottles, cleaned);
     if (existing) { setDupPrompt({ incoming: cleaned, existing, source }); return false; }
-    persist(commitNew(bottles, cleaned));
+    setBottles((prev) => commitNew(prev, cleaned));
     return true;
   };
   const resolveDup = (action) => {
     const dp = dupPrompt; if (!dp) return;
     if (action === "merge") {
-      persist(bottles.map((x) => x.id === dp.existing.id
+      setBottles((prev) => prev.map((x) => x.id === dp.existing.id
         ? { ...x, quantity: String((num(x.quantity) || 0) + (num(dp.incoming.quantity) || 1)) } : x));
       flash("Aantal opgeteld bij de bestaande fles.");
     } else if (action === "add") {
-      persist(commitNew(bottles, dp.incoming));
+      setBottles((prev) => commitNew(prev, dp.incoming));
       flash("Apart toegevoegd.");
     }
     if (action !== "cancel" && dp.source?.jobId) {
@@ -1073,7 +1079,7 @@ export default function App() {
     const b = { ...edit };
     if (!b.name && !b.producer) { flash("Naam of producent is verplicht."); return; }
     b.color = String(b.color).toLowerCase();
-    if (b.id) { persist(bottles.map((x) => (x.id === b.id ? b : x))); setEdit(null); return; }
+    if (b.id) { setBottles((prev) => prev.map((x) => (x.id === b.id ? { ...x, ...cleanBottle(b) } : x))); setEdit(null); return; }
     const nieuw = { ...cleanBottle(b), id: uid() };
     const added = addOrPrompt(nieuw, null);
     setEdit(null);
@@ -1086,7 +1092,7 @@ export default function App() {
       .then((r) => { patchBottle(b.id, enrichPatch(b, r, { keepFilled: true })); flash("Info opgezocht en aangevuld."); })
       .catch(() => flash("Toegevoegd. Info opzoeken lukte niet."));
   };
-  const removeBottle = (id) => persist(bottles.filter((b) => b.id !== id));
+  const removeBottle = (id) => setBottles((prev) => prev.filter((b) => b.id !== id));
 
   // ---- bulk multi-vintage ----
   const addBulk = (shared, rows) => {
@@ -1161,6 +1167,9 @@ export default function App() {
   // read + downscale to JPEG (fixes HEIC iPhone photos and keeps uploads small/fast)
   const readImageFile = (f) => new Promise((resolve) => {
     const rd = new FileReader();
+    // zonder deze twee bleef het scherm eeuwig wachten als het lezen mislukte
+    rd.onerror = () => resolve(null);
+    rd.onabort = () => resolve(null);
     rd.onload = async () => {
       const dataUrl = String(rd.result);
       try {
@@ -1201,16 +1210,18 @@ export default function App() {
         const cur = j.data || data;
         return { ...j, status: "done", data: { ...cur, ...enrichPatch(cur, r) } };
       })))
-      .catch(() => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId ? { ...j, status: "done" } : j)));
+      // een mislukte opzoeking niet stil inslikken: anders zie je gewoon een fles
+      // zonder prijs en weet je niet dat er iets misging
+      .catch((e) => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId
+        ? { ...j, status: "done", error: e.message || "Info opzoeken lukte niet." } : j)));
   // default: each selected photo is a separate wine
   const onPhotoFiles = async (e) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
-    const jobs = await Promise.all(files.map(async (f) => {
-      const im = await readImageFile(f);
-      return { id: uid(), status: "pending", images: [im], preview: im.preview, data: null, error: null };
-    }));
+    const gelezen = (await Promise.all(files.map(readImageFile))).filter(Boolean);
+    if (!gelezen.length) { flash("Kon deze foto's niet lezen."); return; }
+    const jobs = gelezen.map((im) => ({ id: uid(), status: "pending", images: [im], preview: im.preview, data: null, error: null }));
     setPhotoJobs(jobs);
     jobs.forEach((job) => runAnalyze(job.id, job.images));
   };
@@ -1219,7 +1230,8 @@ export default function App() {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
-    const imgs = await Promise.all(files.map(readImageFile));
+    const imgs = (await Promise.all(files.map(readImageFile))).filter(Boolean);
+    if (!imgs.length) { flash("Kon deze foto's niet lezen."); return; }
     const job = { id: uid(), status: "pending", images: imgs, preview: imgs[0].preview, data: null, error: null };
     setPhotoJobs([job]);
     runAnalyze(job.id, imgs);
@@ -1231,13 +1243,15 @@ export default function App() {
     e.target.value = "";
     const jobId = addTarget; setAddTarget(null);
     if (!files.length || !jobId) return;
-    const imgs = await Promise.all(files.map(readImageFile));
-    let all = imgs;
-    setPhotoJobs((prev) => prev && prev.map((j) => {
-      if (j.id !== jobId) return j;
-      all = [...(j.images || []), ...imgs];
-      return { ...j, images: all, preview: j.preview || imgs[0].preview, status: "pending", error: null };
-    }));
+    const imgs = (await Promise.all(files.map(readImageFile))).filter(Boolean);
+    if (!imgs.length) { flash("Kon deze foto niet lezen."); return; }
+    // De volledige lijst hier al samenstellen: de updater van setPhotoJobs loopt
+    // pas bij de volgende render, dus daar de foto's uit halen stuurde enkel de
+    // nieuwe foto naar de analyse en gooide de voorkant weg.
+    const bestaand = (photoJobs || []).find((j) => j.id === jobId);
+    const all = [...((bestaand && bestaand.images) || []), ...imgs];
+    setPhotoJobs((prev) => prev && prev.map((j) => (j.id !== jobId ? j
+      : { ...j, images: all, preview: j.preview || imgs[0].preview, status: "pending", error: null })));
     runAnalyze(jobId, all);
   };
   const addPhotoResult = (jobId) => {
@@ -1253,7 +1267,7 @@ export default function App() {
 
   // ---- update one bottle (used by detail card + enrichment) ----
   const updateBottle = (b) => {
-    persist(bottles.map((x) => (x.id === b.id ? b : x)));
+    setBottles((prev) => prev.map((x) => (x.id === b.id ? { ...x, ...cleanBottle(b) } : x)));
     setDetail((d) => (d && d.id === b.id ? b : d));
   };
   const enrichDetail = async (b) => {
@@ -1317,9 +1331,11 @@ export default function App() {
           <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />
           <Stat
             label="Ongerealiseerd"
-            value={`${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}`}
-            sub={`${stats.gain >= 0 ? "+" : ""}${stats.pct.toFixed(1)}%`}
-            accent={stats.gain >= 0 ? "green" : "red"} />
+            value={stats.vgFlessen ? `${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}` : "—"}
+            sub={stats.vgFlessen
+              ? `${stats.gain >= 0 ? "+" : ""}${stats.pct.toFixed(1)}%${stats.volledig ? "" : ` · op ${stats.vgFlessen} van ${stats.flessen} flessen`}`
+              : "nog geen fles met aankoop én waarde"}
+            accent={!stats.vgFlessen ? undefined : stats.gain >= 0 ? "green" : "red"} />
         </div>
       </header>
 
