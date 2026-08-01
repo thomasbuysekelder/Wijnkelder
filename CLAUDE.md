@@ -52,12 +52,38 @@ lokaal vóór het committen.
   overschrijven (anders kan je een foute prijs nooit corrigeren), maar NOOIT een
   zelf ingetikte waarde: die krijgt `priceManual: true` via `fieldPatch()`.
   `ownValue` en `purchasePrice` blijven sowieso onaangeroerd.
+- Bij elke gevonden prijs hoort een bron-URL in `priceUrl`, zichtbaar als een
+  klein linkje "bron" op de detailkaart. Die URL komt ALTIJD uit onze eigen lijst
+  (het Vivino-aanbod, of het zoekresultaat waarnaar het model met
+  `priceSourceIndex` verwijst) — nooit uit tekst van het model, zodat ze niet
+  verzonnen kan zijn. Geen bron gevonden = geen link.
+- De Vivino-link is `/<domein-wijn>/w/<wijn-id>?year=<jaargang>`. Gebruik NOOIT
+  `/wines/<id>`: dat pad hoort bij een andere id-reeks en komt op een compleet
+  andere wijn uit (getest).
 - DuckDuckGo beantwoordt GET-verzoeken vanaf een server met een lege pagina
-  (HTTP 202). `/api/search` moet dus met POST zoeken.
+  (HTTP 202). `/api/search` moet dus met POST zoeken. Elke link zit verpakt in een
+  redirect (`/l/?uddg=…`); `realUrl()` pakt die uit tot de echte bron-URL.
+
+## Meldingen (anoniem)
+- Onderaan het menu staat "Meld een probleem of idee" → `FeedbackModal` →
+  `/api/feedback` → Resend.
+- Het e-mailadres staat NOOIT in de code of in de client: enkel in de Vercel-
+  omgevingsvariabele `FEEDBACK_EMAIL` (sleutel in `RESEND_API_KEY`). Afzender is
+  `onboarding@resend.dev`, onderwerp "Kelder-app: melding", body = melding +
+  appversie.
+- De melder ziet enkel "Verzonden, bedankt" of "Versturen lukte niet, probeer
+  later opnieuw" — nooit een foutdetail, zodat er niets over de configuratie lekt.
+- `APP_VERSION` in `app.jsx` gaat mee als appversie en moet gelijk blijven aan het
+  cachenummer in `sw.js`.
 
 ## Recensies
 - Nooit een recensie, citaat of score verzinnen. Enkel wat in de zoekresultaten
   staat. Is er niets, dan zegt de app dat: "Geen recensie gevonden."
+- `lookupWineFull()` doet TWEE gratis zoekopdrachten naast elkaar: één voor
+  prijs/algemeen en één gericht op recensies en proefnotities. Het model vat die
+  tweede samen in 2 à 3 zinnen met bronvermelding. Beide zijn gratis; er gaat nog
+  altijd maar één Haiku-call overheen.
+- De Vivino-score is een AANVULLING op die tekst, nooit de hele inhoud.
 - Staat er niets voor de exacte jaargang, dan mag een recensie van een andere
   jaargang van dezelfde wijn, maar verplicht met vermelding: "Recensie van
   jaargang JAAR, ter indicatie:". `score` blijft dan leeg (die geldt enkel voor
@@ -67,13 +93,33 @@ lokaal vóór het committen.
   zo kan het cijfer niet verzonnen worden.
 
 ## Vraag de sommelier
-- Knop in de kop opent `SommelierModal`: vrije vragen over de eigen kelder.
-- `cellarContext()` stuurt de hele kelder compact mee (één regel per wijn),
-  begrensd op 30.000 tekens: eerst vallen de proefnotities weg, daarna de laatste
-  wijnen (dat wordt in het antwoord gemeld). Eén vraag blijft zo rond 1 à 2 cent.
-- Eén Haiku-call zonder tools, max_tokens 900. Een vervolgvraag stuurt de laatste
-  twee beurten beknopt mee (antwoord afgekapt op 600 tekens).
-- Het model mag enkel flessen uit de meegestuurde lijst aanbevelen.
+- Knop in de kop opent `SommelierModal`: bijna schermvullend, tekst 16px,
+  scrollend antwoordgebied en een invoerveld dat onderaan blijft staan.
+- De APP filtert eerst zelf, deterministisch en zonder AI: `parseCriteria()` leest
+  maximumprijs, kleur en "nu op dronk" uit de vraag, `matchesCriteria()` houdt
+  enkel de flessen over die daaraan voldoen (en waarvan er nog minstens één in de
+  kelder ligt). Enkel die kandidaten gaan mee. Zo kan het model niets aanraden
+  dat niet aan de vraag voldoet.
+- Een fles met ONBEKENDE prijs valt af zodra er een prijsgrens in de vraag staat —
+  je kan niet garanderen dat ze eronder zit. Het aantal weggelaten flessen gaat
+  mee in de prompt, zodat de sommelier dat eerlijk kan melden.
+- Past er niets, dan laat `relaxCriteria()` de criteria één voor één vallen en
+  wordt de lijst expliciet als "voldoet NIET aan alle criteria" meegestuurd; het
+  model moet dan zeggen dat er niets past en per suggestie zeggen wát er niet klopt.
+- Begrensd op 30.000 tekens: eerst vallen de proefnotities weg, daarna de laatste
+  wijnen (dat wordt in het antwoord gemeld).
+- Een vervolgvraag stuurt de laatste twee beurten beknopt mee (antwoord afgekapt
+  op 600 tekens).
+
+## Uitzondering op de modelregel: de sommelier draait op Sonnet
+- `SOMMELIER_MODEL = "claude-sonnet-5"` is de ENIGE plek waar geen Haiku draait.
+  De eigenaar keurde hiervoor 3 à 5 cent per vraag goed, omdat de kwaliteit van
+  het advies hier het belangrijkste is. Alle andere aanroepen blijven Haiku.
+- In de praktijk kost een vraag ±1,5 cent: door de voorfiltering is de
+  kandidatenlijst klein (enkele honderden tokens) en staat `max_tokens` op 900.
+  `thinking` staat bewust op `disabled` — anders tellen denk-tokens mee in
+  `max_tokens` en wordt het antwoord afgekapt.
+- Geen tools, ook hier niet: de web_search-regel hierboven blijft gelden.
 
 ## Kostenregels (belangrijk voor de eigenaar)
 - ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit
@@ -95,7 +141,8 @@ lokaal vóór het committen.
 ## Releaseroutine
 Sluit ELKE wijzigingsopdracht altijd automatisch af met, in deze volgorde:
 1. `npm run bundle`
-2. het cachenummer in `sw.js` één hoger (`kelder-vN`)
+2. het cachenummer in `sw.js` één hoger (`kelder-vN`) én `APP_VERSION` in
+   `app.jsx` op dezelfde waarde
 3. commit + push naar `main`
 
 Doe dit ook als de gebruiker er niet om vraagt.

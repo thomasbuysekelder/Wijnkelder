@@ -15,23 +15,36 @@ const strip = (s) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
   .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d))
   .replace(/\s+/g, " ").trim();
 
+// DuckDuckGo verpakt elke link in een redirect (/l/?uddg=<geëncodeerde url>).
+// Die pakken we uit, zodat de app naar de echte bron kan doorlinken.
+function realUrl(attrs) {
+  const m = /href="([^"]+)"/.exec(attrs || "");
+  if (!m) return "";
+  let href = m[1].replace(/&amp;/g, "&");
+  const u = /[?&]uddg=([^&]+)/.exec(href);
+  if (u) { try { href = decodeURIComponent(u[1]); } catch {} }
+  if (href.startsWith("//")) href = "https:" + href;
+  return /^https?:\/\//.test(href) ? href.slice(0, 400) : "";
+}
+
 function parseHtmlResults(html) {
   const out = [];
-  const re = /class="result__a"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  const re = /<a([^>]*class="result__a"[^>]*)>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
   let m;
   while ((m = re.exec(html)) && out.length < 6) {
-    out.push({ title: strip(m[1]).slice(0, 120), snippet: strip(m[2]).slice(0, 300) });
+    out.push({ title: strip(m[2]).slice(0, 120), snippet: strip(m[3]).slice(0, 300), url: realUrl(m[1]) });
   }
   return out;
 }
 
 function parseLiteResults(html) {
   const out = [];
-  const titles = [...html.matchAll(/class="result-link"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => strip(m[1]));
+  const links = [...html.matchAll(/<a([^>]*class="result-link"[^>]*)>([\s\S]*?)<\/a>/g)];
   const snips = [...html.matchAll(/class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g)].map((m) => strip(m[1]));
-  for (let i = 0; i < titles.length && out.length < 6; i++) {
-    if (!titles[i]) continue;
-    out.push({ title: titles[i].slice(0, 120), snippet: (snips[i] || "").slice(0, 300) });
+  for (let i = 0; i < links.length && out.length < 6; i++) {
+    const title = strip(links[i][2]);
+    if (!title) continue;
+    out.push({ title: title.slice(0, 120), snippet: (snips[i] || "").slice(0, 300), url: realUrl(links[i][1]) });
   }
   return out;
 }
@@ -60,6 +73,17 @@ async function ddg(query) {
     } catch {}
   }
   return [];
+}
+
+// Link naar de Vivino-pagina van precies deze wijn en jaargang. Het patroon is
+// /<domein-wijn>/w/<wijn-id>?year=<jaargang>; zonder seo-namen valt hij terug op
+// de zoekpagina. (/wines/<id> NIET gebruiken: dat komt op een andere wijn uit.)
+function vivinoUrl(w, year) {
+  const slug = [w && w.winery && w.winery.seo_name, w && w.seo_name].filter(Boolean).join("-");
+  const q = year ? `?year=${year}` : "";
+  if (slug && w.id) return `https://www.vivino.com/${slug}/w/${w.id}${q}`;
+  const term = [w && w.winery && w.winery.name, w && w.name].filter(Boolean).join(" ").trim();
+  return term ? "https://www.vivino.com/search/wines?q=" + encodeURIComponent(term) : "";
 }
 
 // Vivino-marktprijzen: echte winkelprijzen per jaargang in EUR voor de Belgische markt.
@@ -93,6 +117,7 @@ async function vivino(wine) {
         producer: (w.winery && w.winery.name) || "",
         name: w.name || "",
         vintage: v.year ?? "",
+        url: vivinoUrl(w, v.year),
         price: typeof pr.amount === "number" ? Math.round(pr.amount * 100) / 100 : null,
         currency: (pr.currency && pr.currency.code) || "",
         volumeMl: (pr.bottle_type && pr.bottle_type.volume_ml) || null,

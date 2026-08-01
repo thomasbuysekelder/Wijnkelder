@@ -4,11 +4,13 @@ import {
   Search, Plus, Upload, Download, Camera, X, Wine, Trash2,
   Pencil, Check, Loader2, FileSpreadsheet, AlertCircle, ArrowUpDown,
   MapPin, ExternalLink, MoreHorizontal, Layers, Save, Clipboard,
-  MessageCircle, Send
+  MessageCircle, Send, MessageSquare
 } from "lucide-react";
 
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
+// Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
+const APP_VERSION = "kelder-v10";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -18,13 +20,13 @@ const EMPTY = {
   purchasePrice: "", retailValue: "", ownValue: "",
   supplier: "", score: "", drinkFrom: "", drinkTo: "", notes: "", tasteNotes: "",
   grape: "", description: "", reviews: "", lat: "", lng: "", placeName: "", imageUrl: "", enriched: false,
-  priceNote: "", priceManual: false,
+  priceNote: "", priceManual: false, priceUrl: "",
 };
 
 // Een zelf ingetikte retailwaarde blijft altijd staan: een latere opzoeking mag
 // ze niet overschrijven. Daarom wordt handmatige invoer apart gemarkeerd.
 function fieldPatch(k, v) {
-  if (k === "retailValue") return { retailValue: v, priceManual: true, priceNote: v === "" ? "" : "zelf ingevuld" };
+  if (k === "retailValue") return { retailValue: v, priceManual: true, priceNote: v === "" ? "" : "zelf ingevuld", priceUrl: "" };
   return { [k]: v };
 }
 
@@ -238,10 +240,28 @@ async function callClaude(body) {
   return data;
 }
 
+const FEEDBACK_URL = "/api/feedback";
+// Anonieme melding. Er gaat niets mee behalve de tekst en de appversie; het
+// adres van de bestemmeling staat enkel in een omgevingsvariabele op de server.
+// De melder krijgt alleen te horen of het gelukt is, nooit waarom niet.
+async function sendFeedback(message) {
+  try {
+    const res = await fetch(FEEDBACK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, version: APP_VERSION }),
+    });
+    const data = await res.json().catch(() => null);
+    return !!(res.ok && data && data.ok);
+  } catch { return false; }
+}
+
 const SEARCH_URL = "/api/search";
 // free search (own endpoint) — snippets voor tekst + optionele marktprijzen.
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
-async function fetchSearch({ query, wine }) {
+// De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
+// verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
+async function fetchSearch({ query, wine, prefix = "" }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
@@ -250,9 +270,9 @@ async function fetchSearch({ query, wine }) {
     });
     const data = await res.json();
     const items = (data && data.results) || [];
-    const text = items.map((r) => `- ${r.title}: ${r.snippet}`).join("\n").slice(0, 2600);
-    return { text, offers: Array.isArray(data && data.offers) ? data.offers : [] };
-  } catch { return { text: "", offers: [] }; }
+    const text = items.map((r, i) => `[${prefix}${i + 1}] ${r.title}: ${r.snippet}`).join("\n").slice(0, 2600);
+    return { text, items, offers: Array.isArray(data && data.offers) ? data.offers : [] };
+  } catch { return { text: "", items: [], offers: [] }; }
 }
 async function fetchSnippets(query) { return (await fetchSearch({ query })).text; }
 
@@ -278,17 +298,26 @@ const median = (arr) => {
   const s = [...arr].sort((a, b) => a - b), m = Math.floor(s.length / 2);
   return Math.round((s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) * 100) / 100;
 };
+// bron-URL van het aanbod dat het dichtst bij de gekozen prijs ligt
+const nearestUrl = (pool, price) =>
+  (pool.map((o) => ({ u: o.url || "", d: Math.abs(num(o.price) - price) }))
+    .filter((x) => x.u).sort((a, c) => a.d - c.d)[0] || {}).u || "";
+
 // kies een marktprijs: eerst de exacte jaargang, anders naburige jaargangen van dezelfde wijn
 function marketPrice(offers, b) {
   const cand = (offers || []).filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55);
   if (!cand.length) return null;
   const y = parseInt(b.vintage);
   const exact = y ? cand.filter((o) => parseInt(o.vintage) === y) : [];
-  if (exact.length) return { price: median(exact.map((o) => num(o.price))), basis: "exact", n: exact.length, years: [y] };
+  if (exact.length) {
+    const price = median(exact.map((o) => num(o.price)));
+    return { price, basis: "exact", n: exact.length, years: [y], url: nearestUrl(exact, price) };
+  }
   const near = y ? cand.filter((o) => Math.abs(parseInt(o.vintage) - y) <= 5) : [];
   const pool = near.length ? near : cand;
   const years = [...new Set(pool.map((o) => o.vintage).filter(Boolean))].sort();
-  return { price: median(pool.map((o) => num(o.price))), basis: "nabij", n: pool.length, years };
+  const price = median(pool.map((o) => num(o.price)));
+  return { price, basis: "nabij", n: pool.length, years, url: nearestUrl(pool, price) };
 }
 // Vivino-score van dezelfde wijn: eerst deze jaargang, anders de jaargang met de
 // meeste beoordelingen (die wordt dan expliciet als 'andere jaargang' gemeld)
@@ -389,19 +418,26 @@ async function lookupWineFull(b) {
   "retailPrice": winkelprijs per fles van 75 cl in EUR die LETTERLIJK in de zoekresultaten staat, anders null (nooit zelf schatten),
   "priceVintage": jaargang waarop die prijs slaat (getal) of null,
   "priceSource": "naam van de winkel of website uit de zoekresultaten waar die prijs staat, anders null",
+  "priceSourceIndex": het nummer [n] van het zoekresultaat waar die prijs staat, anders null,
   "drinkFrom": beste drinkjaar vanaf voor deze jaargang (getal),
   "drinkTo": beste drinkjaar tot voor deze jaargang (getal),
   "score": kritiekscore 0-100 die in de zoekresultaten staat voor DEZE jaargang, anders null,
-  "reviews": "recensies uit de zoekresultaten in het Nederlands, met bronnaam; gaat het over een andere jaargang, begin dan met 'Recensie van jaargang JAAR, ter indicatie:'; is er niets, schrijf dan exact 'Geen recensie gevonden.'",
+  "reviews": "2 à 3 zinnen samenvatting van wat proevers en recensenten over deze wijn schrijven, in het Nederlands, met de bronnaam erbij; gaat het over een andere jaargang, begin dan met 'Recensie van jaargang JAAR, ter indicatie:'; is er niets, schrijf dan exact 'Geen recensie gevonden.'",
   "placeName": "plaats waar de wijn gemaakt wordt (domein, streek, land)",
   "lat": breedtegraad als getal,
   "lng": lengtegraad als getal
 }`;
   const wijn = [b.producer, b.name, b.vintage, "-", b.region, b.country].filter(Boolean).join(" ");
-  const { text: ctx, offers } = await fetchSearch({
-    query: `${[b.producer, b.name, b.vintage].filter(Boolean).join(" ")} wijn prijs per fles review`,
-    wine: { producer: b.producer, name: b.name, vintage: b.vintage },
-  });
+  const naam = [b.producer, b.name, b.vintage].filter(Boolean).join(" ");
+  // twee gratis zoekopdrachten: één voor prijs/algemeen, één gericht op recensies
+  const [main, rev] = await Promise.all([
+    fetchSearch({
+      query: `${naam} wijn prijs per fles`,
+      wine: { producer: b.producer, name: b.name, vintage: b.vintage },
+    }),
+    fetchSearch({ query: `${naam} recensie review tasting notes proefnotities`, prefix: "R" }),
+  ]);
+  const { text: ctx, items, offers } = main;
   const mp = marketPrice(offers, b);
   const vr = vivinoRating(offers, b);
   const lines = offerLines(offers, b);
@@ -417,40 +453,55 @@ async function lookupWineFull(b) {
     system:
       "Je bent een ervaren sommelier. Voor prijzen, scores en recensies gebruik je UITSLUITEND de meegeleverde zoekresultaten; je eigen kennis mag enkel de beschrijving, de druif, het drinkvenster en de locatie invullen. " +
       "Prijs: nooit schatten. Staat er geen concreet bedrag in de zoekresultaten, dan is retailPrice null. Het gaat altijd om één fles van 75 cl. " +
-      "Recensies en scores: verzin nooit een citaat, punt of bron. Vind je niets voor deze jaargang, dan mag je een recensie of score van een ANDERE jaargang van dezelfde wijn gebruiken, " +
-      "maar dan begint reviews verplicht met 'Recensie van jaargang JAAR, ter indicatie:' en blijft score null. Vind je helemaal niets, dan is reviews exact 'Geen recensie gevonden.' " +
+      "Recensies: schrijf 2 à 3 zinnen over hoe deze wijn proeft en wat recensenten ervan vinden, ALLEEN op basis van de meegeleverde recensieresultaten, met de bronnaam erbij. " +
+      "Verzin nooit een citaat, punt of bron. Vind je niets voor deze jaargang, dan mag je recensies van een ANDERE jaargang van dezelfde wijn samenvatten, " +
+      "maar dan begint reviews verplicht met 'Recensie van jaargang JAAR, ter indicatie:' en blijft score null. Staat er in de resultaten echt niets over deze wijn, dan is reviews exact 'Geen recensie gevonden.' " +
       "Vermeld Vivino niet in reviews; die score wordt er automatisch bij gezet. " +
+      "Verwijs bij een prijs met priceSourceIndex naar het nummer van het zoekresultaat waar dat bedrag staat. " +
       "Begin met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige geldige JSON-object volgens het schema, zonder tekst errond of markdown.",
-    messages: [{ role: "user", content: `Wijn en jaargang: ${wijn}\n\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\nGeef exact dit JSON-object terug:\n${schema}` }],
+    messages: [{
+      role: "user",
+      content: `Wijn en jaargang: ${wijn}\n\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\n` +
+        `Recensies en proefnotities uit een aparte zoekopdracht:\n${rev.text || "(geen)"}\n\n` +
+        `Geef exact dit JSON-object terug:\n${schema}`,
+    }],
   };
   const data = await callClaude(body);
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
-  return applyReviews(applyMarketPrice(parsed, mp, b), vr);
+  return applyReviews(applyMarketPrice(parsed, mp, b, items), vr);
 }
 
 // Prijs: enkel echte bedragen. Volgorde: (1) marktprijs voor exact deze jaargang,
 // (2) marktprijs van naburige jaargangen, (3) een bedrag dat het model letterlijk
 // uit de zoekresultaten haalde (met bron), (4) niets — dan blijft de prijs leeg.
-function applyMarketPrice(res, mp, b) {
+// De bron-URL komt altijd uit onze eigen lijst (via het nummer van het
+// zoekresultaat), nooit uit de tekst van het model: zo kan ze niet verzonnen zijn.
+function applyMarketPrice(res, mp, b, items) {
   const found = num(res.retailPrice);
   const src = String(res.priceSource || "").trim();
+  const idx = parseInt(res.priceSourceIndex);
+  const hit = idx > 0 && Array.isArray(items) ? items[idx - 1] : null;
   if (mp && mp.basis === "exact") {
     res.retailPrice = mp.price;
     res.priceNote = `marktprijs jaargang ${b.vintage} (${mp.n} aanbieding${mp.n > 1 ? "en" : ""}, 75 cl)`;
+    res.priceUrl = mp.url || "";
   } else if (mp) {
     res.retailPrice = mp.price;
     res.priceNote = `marktprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie`;
+    res.priceUrl = mp.url || "";
   } else if (found > 0 && src) {
     const py = parseInt(res.priceVintage), y = parseInt(b.vintage);
     res.retailPrice = found;
     res.priceNote = py && y && py !== y
       ? `winkelprijs van jaargang ${py} bij ${src}, ter indicatie`
       : `winkelprijs uit de zoekresultaten (${src})`;
+    res.priceUrl = (hit && hit.url) || "";
   } else {
     res.retailPrice = "";
     res.priceNote = "geen prijs gevonden";
+    res.priceUrl = "";
   }
   return res;
 }
@@ -479,7 +530,7 @@ function resultToData(res) {
     supplier: "", score: res.score ?? "",
     drinkFrom: res.drinkFrom ?? "", drinkTo: res.drinkTo ?? "",
     notes: res.notes || "",
-    priceNote: "",
+    priceNote: "", priceUrl: "",
     _confidence: res.confidence || "",
   };
 }
@@ -494,8 +545,8 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
   const had = b.retailValue !== "" && b.retailValue != null;
   const locked = b.priceManual || (keepFilled && had);
   const price = locked || !found
-    ? { retailValue: b.retailValue ?? "", priceNote: had ? (b.priceNote || "") : "geen prijs gevonden" }
-    : { retailValue: r.retailPrice, priceNote: r.priceNote || "" };
+    ? { retailValue: b.retailValue ?? "", priceNote: had ? (b.priceNote || "") : "geen prijs gevonden", priceUrl: had ? (b.priceUrl || "") : "" }
+    : { retailValue: r.retailPrice, priceNote: r.priceNote || "", priceUrl: r.priceUrl || "" };
   return {
     grape: b.grape || r.grape || "",
     description: r.description || b.description || "",
@@ -512,10 +563,63 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
 }
 
 // ---------- Vraag de sommelier ----------
-// De hele kelder gaat als compacte tekst mee. Begrensd op ~30.000 tekens
-// (±8k tokens) zodat één vraag op Haiku rond 1 à 2 cent blijft.
+// De APP filtert eerst zelf op de harde criteria uit de vraag (prijs, kleur,
+// status). Enkel de flessen die daaraan voldoen gaan mee als kandidatenlijst.
+// Zo kan het model niets aanraden dat niet aan je vraag voldoet, en blijft de
+// context klein genoeg om de kost per vraag laag te houden.
 const SOMM_MAX_CHARS = 30000;
-const SOMM_LEGENDE = "producent en wijn | jaargang | kleur | druif | streek | prijs per fles | drinkvenster en status | aantal | locatie | proefnotities";
+const SOMM_LEGENDE = "producent en wijn | jaargang | kleur | druif | streek | prijs per fles | drinkvenster en status | aantal | locatie | score | proefnotities";
+
+// Deze functie is bewust deterministisch: geen AI, gewoon lezen wat er staat.
+function parseCriteria(q) {
+  const s = " " + String(q || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "") + " ";
+  const c = {};
+  // maximumprijs: "onder 50 euro", "max 40", "minder dan 30", "tot € 25", "<50"
+  const price = /(?:onder(?:\s+de)?|max(?:imaal|imum)?|minder\s+dan|goedkoper\s+dan|tot|budget\s+van|<)\s*(?:€\s*)?(\d{1,5})|€\s*(\d{1,5})\s*(?:of\s+minder|max)/.exec(s);
+  if (price) {
+    const n = parseInt(price[1] || price[2]);
+    const isYear = n >= 1900 && n <= 2100 && !/€|euro/.test(s);
+    if (n > 0 && !isYear) c.maxPrice = n;
+  }
+  // kleur
+  if (/\brode?\b|\brood\b/.test(s)) c.color = "rood";
+  else if (/\bwitte?\b|\bwit\b/.test(s)) c.color = "wit";
+  else if (/\brose\b|\brosee?\b/.test(s)) c.color = "rosé";
+  else if (/mousserend|bubbel|champagne|cava|prosecco|schuimwijn/.test(s)) c.color = "mousserend";
+  else if (/versterkt|porto|sherry|madeira/.test(s)) c.color = "versterkt";
+  else if (/oranje\s*wijn|orange\s*wine/.test(s)) c.color = "oranje";
+  // nu drinkbaar
+  if (/op\s*dronk|nu\s+(?:te\s+)?drink|drinkklaar|klaar\s+om\s+te\s+drinken|vanavond|nu\s+open/.test(s)) c.readyNow = true;
+  return c;
+}
+const critLabels = (c) => [
+  c.maxPrice ? `maximaal € ${c.maxPrice} per fles` : "",
+  c.color ? `kleur ${c.color}` : "",
+  c.readyNow ? "nu op dronk" : "",
+].filter(Boolean);
+
+// past deze fles bij de harde criteria? (prijs onbekend telt niet als 'onder X')
+function matchesCriteria(b, c) {
+  if ((num(b.quantity) || 0) <= 0) return false;
+  if (c.color && String(b.color).toLowerCase() !== c.color) return false;
+  if (c.readyNow && drinkStatus(b).key !== "ready") return false;
+  if (c.maxPrice) { const v = effVal(b).v; if (!(v > 0) || v > c.maxPrice) return false; }
+  return true;
+}
+// niets gevonden? dan laten we criteria één voor één vallen om te tonen wat er
+// het dichtst bij komt — expliciet gemarkeerd als 'voldoet niet'
+function relaxCriteria(bottles, c) {
+  const steps = [
+    { drop: "prijs", c: { ...c, maxPrice: null } },
+    { drop: "status", c: { ...c, maxPrice: null, readyNow: false } },
+    { drop: "kleur", c: {} },
+  ];
+  for (const s of steps) {
+    const list = bottles.filter((b) => matchesCriteria(b, s.c));
+    if (list.length) return { list: list.slice(0, 25), relaxed: s.drop };
+  }
+  return { list: [], relaxed: null };
+}
 
 function cellarLine(b, withNotes) {
   const st = drinkStatus(b);
@@ -531,12 +635,14 @@ function cellarLine(b, withNotes) {
     [window, st.label !== "—" ? st.label : ""].filter(Boolean).join(" ") || "geen drinkvenster",
     `${num(b.quantity) || 1}x`,
     b.location,
+    num(b.score) > 0 ? `score ${b.score}` : "",
   ];
   let line = parts.filter(Boolean).join(" | ");
-  if (withNotes && b.tasteNotes) line += ` | proefnota: ${String(b.tasteNotes).replace(/\s+/g, " ").slice(0, 160)}`;
-  return line.slice(0, 400);
+  if (withNotes && b.tasteNotes) line += ` | proefnota: ${String(b.tasteNotes).replace(/\s+/g, " ").slice(0, 200)}`;
+  if (withNotes && b.description) line += ` | over de wijn: ${String(b.description).replace(/\s+/g, " ").slice(0, 200)}`;
+  return line.slice(0, 500);
 }
-// bouwt de kelderlijst op; wordt ze te groot, dan vallen eerst de proefnotities
+// bouwt de lijst op; wordt ze te groot, dan vallen eerst de proefnotities
 // weg en pas daarna de laatste wijnen (dat wordt dan gemeld in het antwoord)
 function cellarContext(bottles) {
   const build = (withNotes) => bottles.map((b, i) => `${i + 1}. ${cellarLine(b, withNotes)}`);
@@ -552,28 +658,51 @@ function cellarContext(bottles) {
   return { text: kept.join("\n"), cut: bottles.length - kept.length, notesDropped };
 }
 
+// Sonnet in plaats van Haiku: dit is de enige functie waar de eigenaar bewust
+// voor een duurder model koos (±2 cent per vraag). Zie CLAUDE.md.
+const SOMMELIER_MODEL = "claude-sonnet-5";
+const SOMM_SYSTEM =
+  "Je bent de persoonlijke sommelier van deze wijnkelder. Je krijgt een KANDIDATENLIJST: dat zijn de flessen die de app al selecteerde omdat ze aan de harde criteria van de vraag voldoen. " +
+  "Regels: (1) beveel UITSLUITEND flessen uit die kandidatenlijst aan, nooit een wijn die er niet in staat; " +
+  "(2) verzin nooit een prijs, jaargang, score, streek of proefnota die er niet bij staat; " +
+  "(3) respecteer alle criteria die bij de vraag staan; " +
+  "(4) leg bij elke aanbeveling in één of twee zinnen uit waarom die wijn bij het gerecht of de gelegenheid past — verwijs naar druif, streek, stijl of de proefnotities; " +
+  "(5) noem telkens producent, wijn en jaargang, en de locatie in de kelder als die gekend is; " +
+  "(6) geef maximaal vier suggesties, de beste eerst; " +
+  "(7) staat de lijst als 'voldoet NIET aan alle criteria' gemarkeerd, zeg dan eerlijk dat er niets past en zeg er bij elke suggestie expliciet bij wat er niet klopt (te duur, nog te jong, andere kleur). Is de lijst leeg, zeg dan gewoon dat je niets passends vindt. " +
+  "Antwoord in vlot, informeel Nederlands (Vlaams), zonder tabellen en zonder markdown-opmaak: korte alinea's of streepjes.";
+
 async function askSommelier({ bottles, question, history }) {
-  const { text, cut, notesDropped } = cellarContext(bottles);
+  const crit = parseCriteria(question);
+  const labels = critLabels(crit);
+  const strict = bottles.filter((b) => matchesCriteria(b, crit));
+  const fallback = strict.length ? null : relaxCriteria(bottles, crit);
+  const cand = strict.length ? strict : (fallback ? fallback.list : []);
+  const { text, cut, notesDropped } = cellarContext(cand);
+  // hoeveel flessen vielen af omdat we hun prijs niet kennen? dat is eerlijker
+  // dan ze stilzwijgend weg te laten
+  const noPrice = crit.maxPrice
+    ? bottles.filter((b) => (num(b.quantity) || 0) > 0 && !(effVal(b).v > 0)).length : 0;
   // vorige beurten gaan beknopt mee, zodat een vervolgvraag context heeft
   const hist = (history || []).slice(-2)
     .map((t) => `Eerdere vraag: ${t.q}\nJouw eerdere antwoord (beknopt): ${String(t.a).replace(/\s+/g, " ").slice(0, 600)}`)
     .join("\n\n");
+  const kop = strict.length
+    ? `Kandidaten uit mijn kelder (${cand.length} flessen die voldoen aan: ${labels.length ? labels.join(", ") : "geen harde criteria"})`
+    : `Deze flessen voldoen NIET aan alle criteria (${labels.join(", ") || "—"}); er is niets dat wel voldoet`;
   const body = {
-    model: "claude-haiku-4-5-20251001",
+    model: SOMMELIER_MODEL,
     max_tokens: 900,
-    system:
-      "Je bent de persoonlijke sommelier van deze wijnkelder. Je krijgt de volledige kelder als lijst en een vraag. " +
-      "Beveel UITSLUITEND flessen aan die in de lijst staan; verzin nooit een wijn en verzin nooit een prijs, score of jaargang die er niet staat. " +
-      "Noem bij elke suggestie de producent, de wijn en de jaargang, en de locatie in de kelder als die gekend is. " +
-      "Hou rekening met het drinkvenster ('op dronk', 'vanaf JAAR' = nog te jong, 'over piek') en met een prijsgrens of gelegenheid in de vraag. " +
-      "Geef maximaal vier suggesties, telkens met één zin waarom ze past. Past er echt niets, zeg dat gewoon en geef aan wat het dichtst in de buurt komt. " +
-      "Antwoord in vlot, informeel Nederlands (Vlaams), zonder tabellen en zonder markdown-opmaak: korte alinea's of streepjes.",
+    thinking: { type: "disabled" },
+    system: SOMM_SYSTEM,
     messages: [{
       role: "user",
       content:
-        `Mijn kelder (${SOMM_LEGENDE}):\n${text}\n` +
-        (cut ? `\n(${cut} wijnen zijn niet meegestuurd omdat de lijst te lang is; zeg dat erbij.)\n` : "") +
+        (labels.length ? `Harde criteria uit mijn vraag: ${labels.join(", ")}.\n\n` : "") +
+        `${kop}.\nFormaat per regel: ${SOMM_LEGENDE}\n${text || "(geen enkele fles)"}\n` +
+        (cut ? `\n(${cut} kandidaten zijn niet meegestuurd omdat de lijst te lang is; zeg dat erbij.)\n` : "") +
         (notesDropped ? "(proefnotities zijn weggelaten om plaats te sparen)\n" : "") +
+        (noPrice ? `(${noPrice} wijnen zijn weggelaten omdat hun prijs niet gekend is; vermeld dat kort.)\n` : "") +
         (hist ? `\n${hist}\n` : "") +
         `\nMijn vraag: ${question}`,
     }],
@@ -608,6 +737,7 @@ export default function App() {
   const askConfirm = (message, action) => setConfirmReq({ message, action });
   const [bulkInit, setBulkInit] = useState(null);
   const [showSomm, setShowSomm] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [sommThread, setSommThread] = useState([]); // [{q, a}] — blijft bewaard tijdens de sessie
 
   const fileImport = useRef();
@@ -917,6 +1047,11 @@ export default function App() {
                     <div style={S.menuSep} />
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); fileImport.current.click(); }}><Upload size={15} /> Excel importeren</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); exportXlsx(bottles); }}><Download size={15} /> Excel exporteren</button>
+                    <div style={S.menuSep} />
+                    <button className="mi" style={{ ...S.menuItem, color: "var(--ink-dim)", fontSize: 12.5 }}
+                      onClick={() => { setMenuOpen(false); setShowFeedback(true); }}>
+                      <MessageSquare size={14} /> Meld een probleem of idee
+                    </button>
                   </div>
                 </>
               )}
@@ -995,6 +1130,7 @@ export default function App() {
       {dupPrompt && <DupModal dp={dupPrompt} onResolve={resolveDup} />}
       {showBulk && <BulkModal initial={bulkInit} onAdd={addBulk} onClose={() => setShowBulk(false)} />}
       {showSomm && <SommelierModal bottles={bottles} thread={sommThread} setThread={setSommThread} onClose={() => setShowSomm(false)} />}
+      {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
       {showBackup && <BackupModal text={encodeBackup(bottles)} count={bottles.length} onClose={() => setShowBackup(false)} />}
       {showRestore && <RestoreModal onRestore={doRestore} onClose={() => setShowRestore(false)} />}
       {confirmReq && <ConfirmModal message={confirmReq.message}
@@ -1296,10 +1432,14 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onClose }) {
   );
 }
 
-function Overlay({ children, onClose, small, wide }) {
+// full = bijna schermvullend venster met een eigen scrollgebied binnenin
+function Overlay({ children, onClose, small, wide, full }) {
+  const box = full
+    ? { ...S.modal, ...S.modalFull }
+    : { ...S.modal, maxWidth: small ? 440 : wide ? 720 : 620 };
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div className="modalcard" style={{ ...S.modal, maxWidth: small ? 440 : wide ? 720 : 620 }} onClick={(e) => e.stopPropagation()}>
+    <div style={{ ...S.overlay, padding: full ? 8 : 16 }} onClick={onClose}>
+      <div className="modalcard" style={box} onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -1448,8 +1588,8 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
   };
 
   return (
-    <Overlay onClose={onClose} wide>
-      <div style={S.modalHead}>
+    <Overlay onClose={onClose} full>
+      <div style={{ ...S.modalHead, marginBottom: 12, flexShrink: 0 }}>
         <div style={{ minWidth: 0 }}>
           <h3 style={S.modalTitle}>Vraag de sommelier</h3>
           <div style={{ ...S.rowSub, marginTop: 3 }}>Hij kent je {bottles.length} {bottles.length === 1 ? "wijn" : "wijnen"} en antwoordt met flessen uit je eigen kelder.</div>
@@ -1496,9 +1636,58 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
         </button>
       </div>
       {thread.length > 0 && (
-        <div style={{ ...S.mapCaption, marginTop: 8, textAlign: "right" }}>
+        <div style={{ ...S.mapCaption, marginTop: 6, textAlign: "right", flexShrink: 0 }}>
           <button style={S.btnLink} onClick={() => { setThread([]); setErr(""); }}>Gesprek wissen</button>
         </div>
+      )}
+    </Overlay>
+  );
+}
+
+// ---------- melding (anoniem) ----------
+function FeedbackModal({ onClose }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+
+  const send = async () => {
+    const msg = text.trim();
+    if (!msg || busy) return;
+    setBusy(true); setErr("");
+    const ok = await sendFeedback(msg);
+    setBusy(false);
+    if (ok) { setDone(true); setText(""); }
+    else setErr("Versturen lukte niet, probeer later opnieuw.");
+  };
+
+  return (
+    <Overlay onClose={onClose} small>
+      <div style={S.modalHead}>
+        <h3 style={S.modalTitle}>Melding</h3>
+        <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
+      </div>
+      {done ? (
+        <>
+          <p style={{ ...S.bodyText, margin: "0 0 4px", color: "var(--green)" }}><Check size={15} /> Verzonden, bedankt.</p>
+          <div style={S.modalFoot}><button style={S.btnPrimary} onClick={onClose}>Sluiten</button></div>
+        </>
+      ) : (
+        <>
+          <p style={{ ...S.bodyText, color: "var(--ink-dim)", margin: "0 0 12px" }}>
+            Loopt er iets mis of heb je een idee? Schrijf het hier. Je melding wordt anoniem doorgestuurd; er gaat niets van je kelder mee.
+          </p>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} autoFocus
+            placeholder="Wat loopt er mis, of wat zou je graag anders zien?"
+            style={{ ...S.input, height: 150, resize: "vertical", lineHeight: 1.5 }} />
+          {err && <div style={{ ...S.jobError, padding: "10px 0" }}><AlertCircle size={15} /> {err}</div>}
+          <div style={S.modalFoot}>
+            <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
+            <button style={S.btnPrimary} onClick={send} disabled={busy || !text.trim()}>
+              {busy ? <Loader2 className="spin" size={15} /> : <Send size={15} />} Versturen
+            </button>
+          </div>
+        </>
       )}
     </Overlay>
   );
@@ -1653,8 +1842,15 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
           <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 8 }}>
             {b.quantity || 1}× in kelder · totaal {eur(ev.v * (num(b.quantity) || 1))}{ev.fallback ? " (op retail)" : ""}
           </div>
-          {b.priceNote && (
-            <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 4 }}>Retail: {b.priceNote}</div>
+          {(b.priceNote || b.priceUrl) && (
+            <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {b.priceNote && <span>Retail: {b.priceNote}</span>}
+              {b.priceUrl && (
+                <a href={b.priceUrl} target="_blank" rel="noreferrer" style={{ ...S.mapLink, fontSize: sc(12) }}>
+                  bron <ExternalLink size={12} />
+                </a>
+              )}
+            </div>
           )}
         </div>
 
@@ -1779,6 +1975,11 @@ const S = {
 
   overlay: { position: "fixed", inset: 0, background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
   modal: { width: "100%", background: "linear-gradient(180deg, #201B17, #1A1613)", border: "1px solid var(--line2)", borderRadius: 16, padding: 22, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 30px 80px rgba(0,0,0,.6)" },
+  modalFull: {
+    maxWidth: 940, height: "calc(100vh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom))",
+    maxHeight: "none", overflow: "hidden", display: "flex", flexDirection: "column",
+    padding: "18px 18px calc(14px + env(safe-area-inset-bottom))",
+  },
   modalHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 18 },
   modalTitle: { fontFamily: "'Spectral',serif", fontSize: 21, fontWeight: 600, margin: 0, letterSpacing: 0.2 },
   form: { display: "flex", flexDirection: "column", gap: 13 },
@@ -1810,12 +2011,13 @@ const S = {
   textSize: { display: "inline-flex", border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden", height: 38, background: "var(--bg2)" },
   tsBtn: { width: 36, background: "transparent", border: "none", color: "var(--ink2)", cursor: "pointer", display: "grid", placeItems: "center", lineHeight: 1, fontFamily: "'Spectral',serif" },
 
-  chatScroll: { display: "flex", flexDirection: "column", gap: 18, maxHeight: "58vh", overflowY: "auto", padding: "2px 2px 4px" },
+  // sommelier: scrollend antwoordgebied, invoerveld blijft onderaan staan
+  chatScroll: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", padding: "2px 2px 4px" },
   chatIntro: { background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "16px 16px 18px" },
-  chatTip: { background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: 20, padding: "8px 14px", fontSize: 13, cursor: "pointer", textAlign: "left", lineHeight: 1.4 },
-  chatQ: { alignSelf: "flex-end", maxWidth: "88%", background: "linear-gradient(180deg, var(--wine-bright), var(--wine))", color: "#fff", borderRadius: "14px 14px 4px 14px", padding: "10px 14px", fontSize: 14, lineHeight: 1.5 },
-  chatA: { alignSelf: "flex-start", maxWidth: "94%", background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: "14px 14px 14px 4px", padding: "12px 15px", fontSize: 14, lineHeight: 1.65, whiteSpace: "pre-wrap" },
-  chatBar: { display: "flex", gap: 8, alignItems: "flex-end", marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" },
+  chatTip: { background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: 20, padding: "10px 16px", fontSize: 16, cursor: "pointer", textAlign: "left", lineHeight: 1.45 },
+  chatQ: { alignSelf: "flex-end", maxWidth: "88%", background: "linear-gradient(180deg, var(--wine-bright), var(--wine))", color: "#fff", borderRadius: "14px 14px 4px 14px", padding: "11px 15px", fontSize: 16, lineHeight: 1.5 },
+  chatA: { alignSelf: "flex-start", maxWidth: "94%", background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: "14px 14px 14px 4px", padding: "14px 17px", fontSize: 16, lineHeight: 1.7, whiteSpace: "pre-wrap" },
+  chatBar: { display: "flex", gap: 8, alignItems: "flex-end", marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", flexShrink: 0 },
 
   chips: { display: "flex", flexWrap: "wrap", gap: 7 },
   chip: { fontSize: 12, border: "1px solid var(--line2)", color: "var(--ink2)", padding: "4px 11px", borderRadius: 20, background: "var(--bg2)", textTransform: "capitalize", letterSpacing: 0.2 },
