@@ -192,9 +192,21 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   de kelderlijst, de statistiek, de kaart, de Excel-export of de dubbelcontrole:
   daarvoor bestaat `kelder` (= `bottles` zonder `buitenKelder`). Gebruik overal
   `kelder` behalve waar het logboek zelf bedoeld is.
+- Een regel wissen in het logboek is een ECHTE ongedaanmaking: de flessen komen
+  terug in de kelder. Een fles van elders verdwijnt helemaal zodra haar laatste
+  regel weg is. `logRegels()` houdt daarvoor met `bron` de oorspronkelijke regel
+  bij; de rijen in het venster zijn kopieën.
 - `drinkSamenvatting()` telt deze maand / dit jaar / totaal DETERMINISTISCH in code
   en geeft die cijfers aan de sommelier. Het model mag daar zelf niets bijrekenen —
   zo kan "voor hoeveel geld heb ik deze maand wijn gedronken" niet fout gaan.
+
+## Indeling van de kop
+- Rechtsboven staat wat TOEVOEGT: Foto, Fles, en de drie puntjes met de
+  instellingen (backup, herstel, Excel, melding).
+- Daaronder staat op een eigen rij wat VERKENT: Sommelier, Logboek, Kaart. Die drie
+  delen de breedte, zodat ze op een telefoon niet wegvallen of afbreken.
+- Zet nieuwe knoppen in de rij waar ze thuishoren; laat de kop niet opnieuw
+  volledig vollopen.
 
 ## Kostenregels (belangrijk voor de eigenaar)
 - ALLE AI-aanroepen draaien op Haiku (claude-haiku-4-5-20251001). Gebruik nooit

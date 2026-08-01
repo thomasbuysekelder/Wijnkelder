@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v48";
+const APP_VERSION = "kelder-v49";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1593,6 +1593,27 @@ export default function App() {
     flash(`${n} fles${n > 1 ? "sen" : ""} ${info.werkwoord} en genoteerd.`);
   };
 
+  // ---- een regel uit het logboek terugdraaien ----
+  // Wissen is hier een echte ongedaanmaking: de flessen komen terug in de kelder,
+  // want de enige reden om een regel te wissen is dat ze fout stond. Een fles die
+  // je elders dronk verdwijnt helemaal wanneer haar laatste regel weg is.
+  const wisLogRegel = (fles, regel) => {
+    const omschrijving = `${regel.d} · ${num(regel.n) || 1} fles${(num(regel.n) || 1) > 1 ? "sen" : ""} ${[fles.producer, fles.name].filter(Boolean).join(" ")}`;
+    askConfirm(`${omschrijving} terugdraaien?`, () => {
+      const log = (Array.isArray(fles.drinkLog) ? fles.drinkLog : []).filter((e) => e !== regel);
+      if (fles.buitenKelder && !log.length) {
+        removeBottle(fles.id);
+        flash("Regel gewist.");
+        return;
+      }
+      patchBottle(fles.id, {
+        drinkLog: log,
+        ...(fles.buitenKelder ? {} : { quantity: String((num(fles.quantity) || 0) + (num(regel.n) || 1)) }),
+      });
+      flash(fles.buitenKelder ? "Regel gewist." : "Regel gewist, de flessen staan terug in je kelder.");
+    });
+  };
+
   // ---- vorige versie terugzetten ----
   const doRestorePrevious = async () => {
     const vorige = await loadPrevious();
@@ -1772,9 +1793,6 @@ export default function App() {
             {savedAt && <span style={S.savedTag}><Check size={11} /> bewaard {savedAt.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit" })}</span>}
           </div>
           <div style={S.actions}>
-            <button style={S.btnGhost} onClick={() => setShowKaart(true)} title="Mijn wijnen op de kaart"><Globe size={15} /> Kaart</button>
-            <button style={S.btnGhost} onClick={() => setShowLog(true)} title="Wat ik gedronken heb"><BookOpen size={15} /> Logboek</button>
-            <button style={S.btnGhost} onClick={() => setShowSomm(true)}><MessageCircle size={15} /> Sommelier</button>
             <button style={S.btnPrimary} onClick={() => filePhoto.current.click()}><Camera size={15} /> Foto</button>
             <button style={S.btnPrimary} onClick={() => setEdit({ ...EMPTY })}><Plus size={15} /> Fles</button>
             <div style={{ position: "relative" }}>
@@ -1801,6 +1819,14 @@ export default function App() {
               )}
             </div>
           </div>
+        </div>
+
+        {/* Toevoegen staat rechtsboven, verkennen op een eigen rij: zo blijft het op
+            een telefoon leesbaar en staat wat bij elkaar hoort ook bij elkaar. */}
+        <div style={S.verkenRij}>
+          <button style={S.verkenKnop} onClick={() => setShowSomm(true)}><MessageCircle size={15} /> Sommelier</button>
+          <button style={S.verkenKnop} onClick={() => setShowLog(true)} title="Wat ik gedronken heb"><BookOpen size={15} /> Logboek</button>
+          <button style={S.verkenKnop} onClick={() => setShowKaart(true)} title="Mijn wijnen op de kaart"><Globe size={15} /> Kaart</button>
         </div>
 
         <div style={S.ledger}>
@@ -1902,7 +1928,7 @@ export default function App() {
         onGedronken={() => setDrinkFles(detail)} />}
       {drinkFles && <DrinkModal b={drinkFles} nieuw={!!drinkFles._nieuw} onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
       {showKaart && <KaartModal bottles={kelder} onKies={(b) => setDetail(b)} onClose={() => setShowKaart(false)} />}
-      {showLog && <LogboekModal bottles={bottles} onKies={(b) => setDetail(b)}
+      {showLog && <LogboekModal bottles={bottles} onKies={(b) => setDetail(b)} onWis={wisLogRegel}
         onElders={() => { setShowLog(false); setDrinkFles({ ...EMPTY, id: uid(), quantity: "1", _nieuw: true }); }}
         onClose={() => setShowLog(false)} />}
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
@@ -2665,7 +2691,7 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
 function logRegels(bottles) {
   const rijen = [];
   for (const b of bottles || []) {
-    for (const e of (Array.isArray(b.drinkLog) ? b.drinkLog : [])) rijen.push({ ...e, b });
+    for (const e of (Array.isArray(b.drinkLog) ? b.drinkLog : [])) rijen.push({ ...e, b, bron: e });
   }
   rijen.sort((x, y) => String(y.d).localeCompare(String(x.d)));
   return rijen;
@@ -2677,7 +2703,7 @@ const maandKop = (d) => {
   return `${MAANDEN[m - 1] || ""} ${String(d).slice(0, 4)}`;
 };
 
-function LogboekModal({ bottles, onKies, onElders, onClose }) {
+function LogboekModal({ bottles, onKies, onElders, onWis, onClose }) {
   const [soort, setSoort] = useState("gedronken");
   const alle = useMemo(() => logRegels(bottles), [bottles]);
   const rijen = alle.filter((e) => (soort === "alles" ? true : soort === "gedronken"
@@ -2731,8 +2757,8 @@ function LogboekModal({ bottles, onKies, onElders, onClose }) {
           return (
             <div key={i}>
               {nieuweKop && <div style={{ ...S.sectionLabel, marginTop: i ? 18 : 0 }}>{kop}</div>}
-              <button className="mi" style={S.logRij} onClick={() => { onKies(e.b); onClose(); }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={S.logRij}>
+                <button className="mi" style={S.logKnop} onClick={() => { onKies(e.b); onClose(); }}>
                   <div style={{ color: "var(--ink)", fontSize: 15 }}>
                     {(num(e.n) || 1)}× {[e.b.producer, e.b.name].filter(Boolean).join(" · ") || "wijn"}
                     {e.b.vintage ? ` ${e.b.vintage}` : ""}
@@ -2745,8 +2771,10 @@ function LogboekModal({ bottles, onKies, onElders, onClose }) {
                     {num(e.opbrengst) > 0 ? ` · opbrengst ${eur(num(e.opbrengst) * (num(e.n) || 1))}` : ""}
                   </div>
                   {zin && <div style={{ ...S.rowSub, marginTop: 3, color: "var(--ink-dim)" }}>{zin.slice(0, 220)}</div>}
-                </div>
-              </button>
+                </button>
+                <button style={S.iconBtn} title="Deze regel terugdraaien"
+                  onClick={() => onWis(e.b, e.bron)}><Trash2 size={14} /></button>
+              </div>
             </div>
           );
         })}
@@ -3024,6 +3052,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
           {(b.region || b.country) && <span style={{ ...S.chip, fontSize: sc(12) }}>{[b.region, b.country].filter(Boolean).join(", ")}</span>}
           {b.score && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold)" }}>{b.score}</span>}
           <span style={{ ...S.chip, fontSize: sc(12), color: st.color, borderColor: st.color }}>{st.label}</span>
+          {b.buitenKelder && <span style={{ ...S.chip, fontSize: sc(12), color: "var(--gold)", borderColor: "var(--gold-dim)" }}>elders gedronken</span>}
         </div>
 
         {/* drink window */}
@@ -3094,7 +3123,9 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
                 onKlaar={(v) => onPatch && onPatch({ ownValue: v })} />} />
           </div>
           <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 8 }}>
-            {b.quantity || 1}× in kelder · totaal {eur(ev.v * (num(b.quantity) || 1))}{ev.fallback ? " (op retail)" : ""}
+            {b.buitenKelder
+              ? "Deze fles lag niet in je kelder; ze staat er voor het logboek."
+              : `${b.quantity || 1}× in kelder · totaal ${eur(ev.v * (num(b.quantity) || 1))}${ev.fallback ? " (op retail)" : ""}`}
           </div>
           {(b.priceNote || b.priceUrl) && (
             <div style={{ ...S.mapCaption, fontSize: sc(12), marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -3443,8 +3474,11 @@ const S = {
   mapPanel: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, textDecoration: "none", cursor: "pointer" },
   mapLink: { display: "inline-flex", alignItems: "center", gap: 4, color: "var(--gold)", fontSize: 12, textDecoration: "none", whiteSpace: "nowrap" },
   mapCaption: { fontSize: 12, color: "var(--ink-dim)" },
+  verkenRij: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" },
+  verkenKnop: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, flex: "1 1 108px", minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", height: 40, borderRadius: 10, fontSize: 13.5, fontWeight: 500, cursor: "pointer" },
   logTellers: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9 },
-  logRij: { display: "flex", alignItems: "flex-start", gap: 10, width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid var(--bg3)", padding: "11px 4px", cursor: "pointer", color: "var(--ink)" },
+  logRij: { display: "flex", alignItems: "flex-start", gap: 8, width: "100%", borderBottom: "1px solid var(--bg3)", padding: "11px 4px" },
+  logKnop: { flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "var(--ink)" },
   kaart: { flex: 1, minHeight: 240, borderRadius: 12, overflow: "hidden", border: "1px solid var(--line2)", background: "#12100E" },
   kaartPaneel: { maxHeight: "34vh", overflowY: "auto", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, padding: "12px 10px", flexShrink: 0 },
   mapPlaceholder: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-dim)", background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "20px 15px" },
