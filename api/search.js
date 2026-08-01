@@ -71,7 +71,22 @@ async function brave(query, poging = 0) {
     });
     // gratis laag staat één bevraging per seconde toe; de app zoekt er twee tegelijk
     if (r.status === 429 && poging === 0) { await slaap(1200); return brave(query, 1); }
-    if (!r.ok) return { items: null, status: `geweigerd (${r.status})` };
+    if (!r.ok) {
+      // Brave zet in het antwoord waaróm hij weigert; zonder die uitleg blijf je
+      // gissen tussen een foute sleutel en een fout opgebouwd verzoek.
+      let reden = "";
+      try {
+        const tekst = await r.text();
+        try {
+          const j = JSON.parse(tekst);
+          const e = (j && j.error) || {};
+          reden = [e.code, e.detail || e.message].filter(Boolean).join(": ");
+          // sommige fouten zitten een niveau dieper, in meta
+          if (!reden && e.meta) reden = JSON.stringify(e.meta).slice(0, 120);
+        } catch { reden = tekst.slice(0, 120); }
+      } catch { /* geen leesbaar antwoord */ }
+      return { items: null, status: `geweigerd (${r.status}${reden ? ": " + strip(reden).slice(0, 120) : ""})` };
+    }
     const j = await r.json();
     const res = ((j && j.web && j.web.results) || []).slice(0, 6).map((x) => ({
       title: strip(x.title || "").slice(0, 120),
