@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v41";
+const APP_VERSION = "kelder-v42";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -151,6 +151,8 @@ function decodeBackup(text) {
 const PREV_KEY = STORAGE_KEY + "-vorige";
 // voorkeur, geen kelderdata: aparte sleutel zodat de kelder er nooit door geraakt wordt
 const GELD_KEY = "wijnkelder-toon-geld";
+const NAAM_KEY = "wijnkelder-naam";
+const STANDAARDNAAM = "Wijnkelder";
 
 // Elke fles krijgt gegarandeerd een eigen id: zonder id wist het verwijderen van
 // één fles ze allemaal, omdat ze dan niet meer uit elkaar te houden zijn.
@@ -512,6 +514,15 @@ function marketPrice(offers, b) {
 }
 // Herkomst volgens Vivino (streek + land), van het best passende aanbod. Dit is
 // harde brondata en gaat dus vóór op wat het model uit de naam zou afleiden.
+// Etiketfoto van het best passende aanbod, bij voorkeur van de eigen jaargang.
+function vivinoImage(offers, b) {
+  const passend = (offers || []).filter((o) => o.image && offerMatch(o, b) >= 0.55);
+  if (!passend.length) return "";
+  const y = parseInt(b.vintage);
+  const exact = y ? passend.filter((o) => parseInt(o.vintage) === y) : [];
+  return (exact[0] || passend[0]).image;
+}
+
 function vivinoOrigin(offers, b) {
   const beste = (offers || []).filter((o) => (o.region || o.country) && offerMatch(o, b) >= 0.55)
     .sort((a, c) => offerMatch(c, b) - offerMatch(a, b))[0];
@@ -750,6 +761,8 @@ async function lookupWineFull(b) {
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
   const res = applyReviews(applyMarketPrice(parsed, mp, b, items, main.rates), vr);
   // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
+  const etiket = vivinoImage(offers, b);
+  if (etiket) res.imageUrl = etiket;
   const herkomst = vivinoOrigin(offers, b);
   if (herkomst && herkomst.country) { res.region = herkomst.region || res.region; res.country = herkomst.country; }
   // Coördinaten uit een echte geocoder in plaats van uit het model: zo krijgt elke
@@ -910,6 +923,7 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
     description: r.description || b.description || "",
     reviews: r.reviews || b.reviews || "",
     placeName: r.placeName || b.placeName || "",
+    imageUrl: r.imageUrl || b.imageUrl || "",
     lat: r.lat ?? b.lat ?? "",
     lng: r.lng ?? b.lng ?? "",
     ...price,
@@ -1145,6 +1159,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [fColor, setFColor] = useState("");
   const [fStatus, setFStatus] = useState("");
+  const [fTodo, setFTodo] = useState("");
   const [sort, setSort] = useState("producer");
   const [edit, setEdit] = useState(null);          // bottle being edited or new
   const [photoJobs, setPhotoJobs] = useState(null); // array of {id,status,preview,data,error}
@@ -1167,6 +1182,15 @@ export default function App() {
   const [toonGeld, setToonGeld] = useState(false);
   useEffect(() => { try { if (LS && LS.getItem(GELD_KEY) === "1") setToonGeld(true); } catch {} }, []);
   const wisselGeld = () => setToonGeld((v) => { const n = !v; try { if (LS) LS.setItem(GELD_KEY, n ? "1" : "0"); } catch {} return n; });
+  // eigen naam voor de app; staat los van de kelderdata
+  const [appNaam, setAppNaam] = useState(STANDAARDNAAM);
+  const [naamBewerken, setNaamBewerken] = useState(false);
+  useEffect(() => { try { if (LS) { const n = LS.getItem(NAAM_KEY); if (n && n.trim()) setAppNaam(n); } } catch {} }, []);
+  const bewaarNaam = (n) => {
+    const schoon = String(n || "").trim().slice(0, 28) || STANDAARDNAAM;
+    setAppNaam(schoon);
+    try { if (LS) LS.setItem(NAAM_KEY, schoon); } catch {}
+  };
   const [sommThread, setSommThread] = useState([]); // [{q, a}] — blijft bewaard tijdens de sessie
 
   const fileImport = useRef();
@@ -1225,6 +1249,10 @@ export default function App() {
     let list = bottles.filter((b) => {
       if (fColor && String(b.color).toLowerCase() !== fColor) return false;
       if (fStatus && drinkStatus(b).key !== fStatus) return false;
+      if (fTodo === "geenAankoop" && money(b.purchasePrice) > 0) return false;
+      if (fTodo === "geenWaarde" && effVal(b).v > 0) return false;
+      if (fTodo === "nietOpgezocht" && b.enriched) return false;
+      if (fTodo === "geenNotitie" && String(b.tasteNotes || "").trim()) return false;
       if (query) {
         const q = query.toLowerCase();
         const hay = [b.producer, b.name, b.region, b.country, b.location, b.vintage, b.supplier]
@@ -1241,7 +1269,7 @@ export default function App() {
       return `${a.producer} ${a.name}`.localeCompare(`${b.producer} ${b.name}`);
     });
     return list;
-  }, [bottles, query, fColor, fStatus, sort]);
+  }, [bottles, query, fColor, fStatus, fTodo, sort]);
 
   const stats = useMemo(() => {
     let flessen = 0, cost = 0, value = 0;
@@ -1531,7 +1559,14 @@ export default function App() {
         <div style={S.brandRow}>
           <div style={S.brand}>
             <Wine size={22} strokeWidth={1.5} style={{ color: "var(--wine-bright)" }} />
-            <span style={S.brandName}>Kelder</span>
+            {naamBewerken ? (
+              <input autoFocus style={{ ...S.input, ...S.brandName, width: 190, padding: "2px 8px" }}
+                defaultValue={appNaam} maxLength={28}
+                onBlur={(e) => { bewaarNaam(e.target.value); setNaamBewerken(false); }}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setNaamBewerken(false); }} />
+            ) : (
+              <span style={{ ...S.brandName, cursor: "pointer" }} onClick={() => setNaamBewerken(true)} title="Tik om de naam te wijzigen">{appNaam}</span>
+            )}
             {savedAt && <span style={S.savedTag}><Check size={11} /> bewaard {savedAt.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit" })}</span>}
           </div>
           <div style={S.actions}>
@@ -1603,6 +1638,13 @@ export default function App() {
           <option value="wait">Nog wachten</option>
           <option value="past">Over piek</option>
           <option value="unknown">Geen venster</option>
+        </select>
+        <select style={S.select} value={fTodo} onChange={(e) => setFTodo(e.target.value)}>
+          <option value="">Alles</option>
+          <option value="geenAankoop">Aankoop ontbreekt</option>
+          <option value="geenWaarde">Waarde ontbreekt</option>
+          <option value="nietOpgezocht">Nog niet opgezocht</option>
+          <option value="geenNotitie">Geen proefnotitie</option>
         </select>
         <select style={S.select} value={sort} onChange={(e) => setSort(e.target.value)}>
           <option value="producer">Sorteer: naam</option>
@@ -2364,6 +2406,12 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch }) {
       </div>
 
       <div style={{ maxHeight: "72vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+        {b.imageUrl && (
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <img src={b.imageUrl} alt="etiket" style={S.etiket}
+              onError={(e) => { e.target.style.display = "none"; }} />
+          </div>
+        )}
         {b.verifyNote && (
           <div style={{ ...S.jobError, color: "var(--amber)", padding: "10px 13px", fontSize: sc(13), background: "rgba(210,160,73,.08)", border: "1px solid rgba(210,160,73,.3)", borderRadius: 10, alignItems: "flex-start" }}>
             <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 2 }} /> <span>{b.verifyNote}</span>
@@ -2439,7 +2487,9 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch }) {
             <ValCell label="Aankoop" sc={sc}
               bewerk={<DirectVeld waarde={b.purchasePrice} getal placeholder="—" sc={sc}
                 onKlaar={(v) => onPatch && onPatch({ purchasePrice: v })} />} />
-            <ValCell label="Retail" value={money(b.retailValue) > 0 ? eur(money(b.retailValue)) : "—"} sub={money(b.retailValue) > 0 ? "incl. btw" : ""} sc={sc} />
+            <ValCell label="Retail" sc={sc} sub={b.priceManual ? "zelf ingevuld · incl. btw" : "incl. btw"}
+              bewerk={<DirectVeld waarde={b.retailValue} getal placeholder="—" sc={sc}
+                onKlaar={(v) => onPatch && onPatch(fieldPatch("retailValue", v))} />} />
             <ValCell label="Eigen schatting" sc={sc}
               sub={ev.fallback ? `leeg = retail (${eur(ev.v)})` : ""}
               bewerk={<DirectVeld waarde={b.ownValue} getal placeholder="—" sc={sc}
@@ -2735,6 +2785,7 @@ const S = {
   tsBtn: { width: 36, background: "transparent", border: "none", color: "var(--ink2)", cursor: "pointer", display: "grid", placeItems: "center", lineHeight: 1, fontFamily: "'Spectral',serif" },
 
   // sommelier: scrollend antwoordgebied, invoerveld blijft onderaan staan
+  etiket: { maxWidth: 150, maxHeight: 210, objectFit: "contain", borderRadius: 10, background: "var(--bg)", border: "1px solid var(--line)", padding: 6 },
   geldKnop: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", border: "1px solid var(--line)", color: "var(--ink-dim)", padding: "4px 10px", borderRadius: 20, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   bewaardTag: { position: "absolute", right: 6, top: -16, fontSize: 10, color: "var(--green)", display: "inline-flex", alignItems: "center", gap: 3 },
   bulkRij: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid var(--bg3)" },

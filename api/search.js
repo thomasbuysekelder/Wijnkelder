@@ -291,6 +291,12 @@ async function vivino(wine) {
         region: (w.region && w.region.name) || "",
         country: (w.region && w.region.country && (w.region.country.name || w.region.country.code)) || "",
         url: vivinoUrl(w, v.year),
+        // etiketfoto van deze jaargang (Vivino levert meerdere uitsneden)
+        image: (() => {
+          const im = v.image || {};
+          const kies = (im.variations && (im.variations.label_large || im.variations.label_medium || im.variations.bottle_large)) || im.location || "";
+          return kies ? (String(kies).startsWith("//") ? "https:" + kies : String(kies)) : "";
+        })(),
         price: typeof pr.amount === "number" ? Math.round(pr.amount * 100) / 100 : null,
         currency: (pr.currency && pr.currency.code) || "",
         volumeMl: (pr.bottle_type && pr.bottle_type.volume_ml) || null,
