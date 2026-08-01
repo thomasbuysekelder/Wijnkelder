@@ -57,9 +57,12 @@ const slaap = (ms) => new Promise((r) => setTimeout(r, ms));
 // Geeft { items, status } terug. De status zegt WAAROM Brave eventueel niets gaf,
 // want "geen sleutel" en "sleutel geweigerd" vragen om een heel ander antwoord.
 async function brave(query, poging = 0) {
-  const key = process.env.BRAVE_API_KEY;
+  // Bij het plakken in Vercel komt er vaak een spatie of regeleinde mee. Die halen
+  // we er gewoon af in plaats van de sleutel te weigeren; alleen witruimte MIDDEN
+  // in de sleutel wijst op een echt verkeerd gekopieerde waarde.
+  const key = String(process.env.BRAVE_API_KEY || "").trim();
   if (!key) return { items: null, status: "geen sleutel" };
-  if (!/^\S+$/.test(key)) return { items: null, status: "sleutel bevat spaties" };
+  if (/\s/.test(key)) return { items: null, status: "sleutel bevat een spatie middenin" };
   const p = new URLSearchParams({ q: query, count: "6", country: "BE", search_lang: "nl", safesearch: "off" });
   try {
     const r = await fetch("https://api.search.brave.com/res/v1/web/search?" + p, {
