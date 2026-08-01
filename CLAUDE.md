@@ -78,9 +78,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   de rest van de app werkt gewoon door.
 - `sw.js` cachet enkel bestanden van de app zelf; kaarttegels van een ander domein
   gaan bewust rechtstreeks naar het netwerk.
-- Flessen binnen ongeveer een kilometer van elkaar (2 decimalen) staan op één pin,
-  met het aantal flessen erin. Tik je op een pin, dan verschijnt de lijst en kan je
-  naar de detailkaart springen.
+- Alle flessen van DEZELFDE PRODUCENT staan op één pin: het is hetzelfde domein.
+  De opzoeking geeft per jaargang wel eens een andere streeknaam terug, en dan
+  stond dezelfde wijn verspreid over de kaart. De pin staat op de MEDIAAN van de
+  gekende punten, zodat één uitschieter ze niet kan verslepen. Zonder producent
+  valt de groepering terug op de coördinaten (2 decimalen). Tik je op een pin,
+  dan verschijnt de lijst en kan je naar de detailkaart springen.
 - Er wordt NOOIT iets opgezocht bij het openen van de kaart: ze gebruikt alleen de
   coördinaten die al bij de fles staan.
 

@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v45";
+const APP_VERSION = "kelder-v46";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -2233,32 +2233,36 @@ function BulkModal({ initial, onAdd, onClose }) {
         <div style={{ ...S.sectionLabel, marginTop: 6 }}>Jaargangen</div>
         {rows.map((r, i) => (
           <div key={i} style={S.bulkRij}>
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-              <label style={{ ...S.field, flex: "0 0 92px", minWidth: 0 }}>
-                {i === 0 && <span style={S.fieldLabel}>Jaargang</span>}
-                <input style={S.input} placeholder="2018" value={r.vintage} onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
+            <div style={S.bulkKop}>
+              <span>Jaargang {i + 1}</span>
+              <button style={S.iconBtn} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
+            </div>
+            {/* elk veld houdt zijn eigen opschrift: zo kan er niets over elkaar
+                vallen, hoe smal het scherm ook is */}
+            <div style={S.bulkVelden}>
+              <label style={{ ...S.field, flex: "1 1 96px", minWidth: 0 }}>
+                <span style={S.fieldLabel}>Jaargang</span>
+                <input style={S.input} placeholder="bv. 2018" value={r.vintage}
+                  onChange={(e) => setRow(i, "vintage", e.target.value)} inputMode="numeric" />
               </label>
-              <label style={{ ...S.field, flex: 1, minWidth: 0 }}>
-                {i === 0 && <span style={S.fieldLabel}>Formaat</span>}
+              <label style={{ ...S.field, flex: "1 1 120px", minWidth: 0 }}>
+                <span style={S.fieldLabel}>Formaat</span>
                 <select style={S.input} value={num(r.volumeMl) || 750} onChange={(e) => setRow(i, "volumeMl", parseInt(e.target.value))}>
                   {FORMATEN.map((f) => <option key={f.ml} value={f.ml}>{f.label}</option>)}
                 </select>
               </label>
               <div style={{ ...S.field, flex: "0 0 auto" }}>
-                {i === 0 && <span style={S.fieldLabel}>Aantal</span>}
+                <span style={S.fieldLabel}>Aantal</span>
                 <QtyStepper value={r.quantity} onChange={(v) => setRow(i, "quantity", v)} />
               </div>
-              <button style={{ ...S.iconBtn, marginBottom: 2 }} onClick={() => rmRow(i)} disabled={rows.length <= 1}><Trash2 size={15} /></button>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <label style={{ ...S.field, flex: "0 0 92px", minWidth: 0 }}>
-                {i === 0 && <span style={S.fieldLabel}>Aankoop €</span>}
+              <label style={{ ...S.field, flex: "1 1 110px", minWidth: 0 }}>
+                <span style={S.fieldLabel}>Aankoop €</span>
                 <input style={S.input} type="number" inputMode="decimal" value={r.purchasePrice}
                   placeholder={i > 0 ? (rows[0].purchasePrice || "") : ""}
                   onChange={(e) => setRow(i, "purchasePrice", e.target.value)} />
               </label>
-              <label style={{ ...S.field, flex: 1, minWidth: 0 }}>
-                {i === 0 && <span style={S.fieldLabel}>Waar gekocht</span>}
+              <label style={{ ...S.field, flex: "2 1 150px", minWidth: 0 }}>
+                <span style={S.fieldLabel}>Waar gekocht</span>
                 <input style={S.input} value={r.supplier}
                   placeholder={i > 0 ? (rows[0].supplier || shared.supplier || "zelfde als hierboven") : (shared.supplier || "leverancier")}
                   onChange={(e) => setRow(i, "supplier", e.target.value)} />
@@ -2278,7 +2282,7 @@ function BulkModal({ initial, onAdd, onClose }) {
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
         <button style={S.btnPrimary} onClick={() => onAdd(shared, filled, metOpzoeken)} disabled={!filled.length || (!shared.producer && !shared.name)}>
-          <Check size={15} /> {filled.length} jaargangen · {total} flessen toevoegen
+          <Check size={15} /> {filled.length ? `${filled.length} jaargang${filled.length > 1 ? "en" : ""} · ${total} fles${total === 1 ? "" : "sen"} toevoegen` : "Vul eerst een jaargang in"}
         </button>
       </div>
     </Overlay>
@@ -2463,18 +2467,39 @@ function zetLeafletCss() {
   leafletCssGezet = true;
 }
 
-// Flessen op ongeveer dezelfde plek horen op een pin samen (2 decimalen ~ 1 km).
+// Alle flessen van dezelfde producent horen op ÉÉN pin: het is hetzelfde domein,
+// dus dezelfde plek. De opzoeking geeft per jaargang wel eens een iets andere
+// streeknaam terug ("Toscane" tegenover "Brunello di Montalcino"), en dan kwamen
+// dezelfde wijnen verspreid over de kaart te staan. We nemen daarom de mediaan van
+// wat we per producent weten; één uitschieter kan de pin dan niet verslepen.
+function mediaan(getallen) {
+  const g = [...getallen].sort((a, b) => a - b);
+  const m = Math.floor(g.length / 2);
+  return g.length % 2 ? g[m] : (g[m - 1] + g[m]) / 2;
+}
+
 function kaartPunten(bottles) {
   const groepen = new Map();
   for (const b of bottles) {
     const lat = num(b.lat), lng = num(b.lng);
     if (!lat || !lng) continue;
     if ((num(b.quantity) || 0) <= 0) continue;
-    const k = `${lat.toFixed(2)},${lng.toFixed(2)}`;
-    if (!groepen.has(k)) groepen.set(k, { lat, lng, plaats: b.placeName || [b.region, b.country].filter(Boolean).join(", "), flessen: [] });
-    groepen.get(k).flessen.push(b);
+    const maker = norm(b.producer || b.name);
+    const k = maker || `${lat.toFixed(2)},${lng.toFixed(2)}`;
+    if (!groepen.has(k)) groepen.set(k, { flessen: [], lats: [], lngs: [], namen: [] });
+    const g = groepen.get(k);
+    g.flessen.push(b);
+    g.lats.push(lat); g.lngs.push(lng);
+    if (b.placeName) g.namen.push(b.placeName);
   }
-  return [...groepen.values()];
+  return [...groepen.values()].map((g) => ({
+    lat: mediaan(g.lats),
+    lng: mediaan(g.lngs),
+    // de langste plaatsnaam is meestal de meest volledige
+    plaats: g.namen.sort((a, b) => b.length - a.length)[0]
+      || [g.flessen[0].region, g.flessen[0].country].filter(Boolean).join(", "),
+    flessen: g.flessen,
+  }));
 }
 
 function KaartModal({ bottles, onClose, onKies }) {
@@ -2763,7 +2788,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
             <ValCell label="Retail" sc={sc} sub={b.priceManual ? "zelf ingevuld · incl. btw" : "incl. btw"}
               bewerk={<DirectVeld waarde={b.retailValue} getal placeholder="—" sc={sc}
                 onKlaar={(v) => onPatch && onPatch(fieldPatch("retailValue", v))} />} />
-            <ValCell label="Eigen schatting" sc={sc}
+            <ValCell label="Mijn waarde" sc={sc}
               sub={ev.fallback ? `leeg = retail (${eur(ev.v)})` : ""}
               bewerk={<DirectVeld waarde={b.ownValue} getal placeholder="—" sc={sc}
                 onKlaar={(v) => onPatch && onPatch({ ownValue: v })} />} />
@@ -2893,7 +2918,7 @@ function WineChat({ b, sc }) {
 function ValCell({ label, value, sub, muted, sc, bewerk }) {
   return (
     <div style={S.valCell}>
-      <div style={{ ...S.valCellLabel, fontSize: sc(11) }}>{label}</div>
+      <div style={{ ...S.valCellLabel, fontSize: sc(11), minHeight: sc(28) }}>{label}</div>
       {bewerk || (
         <div style={{ ...S.valCellValue, fontSize: sc(17), color: muted ? "var(--ink-dim)" : "var(--ink)", fontStyle: muted ? "italic" : "normal" }}>{value}</div>
       )}
@@ -3045,8 +3070,8 @@ const S = {
   emptyTitle: { fontFamily: "'Spectral',serif", fontSize: 22, fontWeight: 500, margin: "8px 0 0" },
   emptyText: { color: "var(--ink-dim)", maxWidth: 420, lineHeight: 1.5, margin: 0 },
 
-  btnPrimary: { display: "inline-flex", alignItems: "center", gap: 6, background: "linear-gradient(180deg, var(--wine-bright), var(--wine))", border: "1px solid var(--wine-bright)", color: "#fff", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 1px 2px rgba(0,0,0,.3)" },
-  btnGhost: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer" },
+  btnPrimary: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 0, background: "linear-gradient(180deg, var(--wine-bright), var(--wine))", border: "1px solid var(--wine-bright)", color: "#fff", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 1px 2px rgba(0,0,0,.3)" },
+  btnGhost: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer" },
   btnLink: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "var(--gold)", fontSize: 13, cursor: "pointer" },
 
   overlay: { position: "fixed", inset: 0, background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
@@ -3063,7 +3088,7 @@ const S = {
   field: { display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 130 },
   fieldLabel: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.8, color: "var(--ink-dim)" },
   input: { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 9, color: "var(--ink)", padding: "10px 12px", fontSize: 16, width: "100%" },
-  modalFoot: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 },
+  modalFoot: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20, flexWrap: "wrap" },
 
   stepper: { display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 },
   stepBtn: { width: 36, height: 36, borderRadius: 9, border: "1px solid var(--line2)", background: "var(--bg3)", color: "var(--ink)", fontSize: 20, lineHeight: 1, cursor: "pointer", display: "grid", placeItems: "center", userSelect: "none" },
@@ -3091,7 +3116,9 @@ const S = {
   etiket: { maxWidth: 150, maxHeight: 210, objectFit: "contain", borderRadius: 10, background: "var(--bg)", border: "1px solid var(--line)", padding: 6 },
   geldKnop: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", border: "1px solid var(--line)", color: "var(--ink-dim)", padding: "4px 10px", borderRadius: 20, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 },
   bewaardTag: { position: "absolute", right: 6, top: -16, fontSize: 10, color: "var(--green)", display: "inline-flex", alignItems: "center", gap: 3 },
-  bulkRij: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid var(--bg3)" },
+  bulkRij: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 12, borderBottom: "1px solid var(--bg3)" },
+  bulkKop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11, textTransform: "uppercase", letterSpacing: 1.2, color: "var(--gold-dim)", fontWeight: 600 },
+  bulkVelden: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" },
   chatScroll: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 18, overflowY: "auto", padding: "2px 2px 4px" },
   chatIntro: { background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "16px 16px 18px" },
   chatTip: { background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", borderRadius: 20, padding: "10px 16px", fontSize: 16, cursor: "pointer", textAlign: "left", lineHeight: 1.45 },
@@ -3113,10 +3140,10 @@ const S = {
   mapPlaceholder: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-dim)", background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "20px 15px" },
   bodyText: { fontSize: 14, lineHeight: 1.65, color: "var(--ink2)", margin: 0 },
   valGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9 },
-  valCell: { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: "11px 13px", minWidth: 0 },
-  valCellLabel: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--ink-dim)", marginBottom: 4 },
+  valCell: { background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: "11px 13px", minWidth: 0, display: "flex", flexDirection: "column" },
+  valCellLabel: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "var(--ink-dim)", marginBottom: 4, lineHeight: 1.25 },
   valCellValue: { fontFamily: "'JetBrains Mono',monospace", fontSize: 17, fontWeight: 500, whiteSpace: "nowrap" },
-  valCellSub: { fontSize: 10, color: "var(--ink-dim)", marginTop: 3 },
+  valCellSub: { fontSize: 10, color: "var(--ink-dim)", marginTop: "auto", paddingTop: 3, lineHeight: 1.3 },
 
   toast: { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "var(--bg3)", border: "1px solid var(--line)", color: "var(--ink)", padding: "10px 18px", borderRadius: 10, fontSize: 13, zIndex: 60, boxShadow: "0 8px 30px rgba(0,0,0,.4)" },
 };
