@@ -54,6 +54,32 @@ function parseLiteResults(html) {
 // zoekopdracht wel lukte maar niets opleverde.
 const slaap = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------- wisselkoersen ----------
+// Officiële dagkoersen van de Europese Centrale Bank: gratis, geen sleutel, en de
+// bron waar iedereen zich op baseert. Eén bestand bevat alle munten. De koersen
+// zijn euro-gebaseerd: 1 EUR = <rate> vreemde munt, dus delen om naar euro te gaan.
+// De ECB publiceert één keer per werkdag, dus zes uur bewaren volstaat ruim.
+const ECB_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml";
+let koersCache = { tijd: 0, koersen: null };
+
+async function ecbKoersen() {
+  const nu = Date.now();
+  if (koersCache.koersen && nu - koersCache.tijd < 6 * 60 * 60 * 1000) return koersCache.koersen;
+  try {
+    const r = await fetch(ECB_URL, { headers: { "user-agent": UA, accept: "application/xml" } });
+    if (!r.ok) return koersCache.koersen;          // liever een oude koers dan geen
+    const xml = await r.text();
+    const koersen = {};
+    for (const m of xml.matchAll(/currency=['"]([A-Z]{3})['"]\s+rate=['"]([\d.]+)['"]/g)) {
+      const k = parseFloat(m[2]);
+      if (k > 0) koersen[m[1]] = k;
+    }
+    if (!Object.keys(koersen).length) return koersCache.koersen;
+    koersCache = { tijd: nu, koersen };
+    return koersen;
+  } catch { return koersCache.koersen; }
+}
+
 // Geeft { items, status } terug. De status zegt WAAROM Brave eventueel niets gaf,
 // want "geen sleutel" en "sleutel geweigerd" vragen om een heel ander antwoord.
 async function brave(query, poging = 0) {
@@ -247,10 +273,11 @@ export default async function handler(req, res) {
       const d = await ddg(q);
       return { items: d, bron: d === null ? "" : "DuckDuckGo", brave: b.status };
     };
-    const [wr, offers, wikiInfo] = await Promise.all([
+    const [wr, offers, wikiInfo, koersen] = await Promise.all([
       web(),
       wine ? vivino(wine) : Promise.resolve([]),
       wiki ? wikipedia(wiki) : Promise.resolve(null),
+      q ? ecbKoersen() : Promise.resolve(null),
     ]);
     const results = wr.items;
     // sources maakt het verschil zichtbaar tussen "bron gaf niets terug" en
@@ -261,6 +288,7 @@ export default async function handler(req, res) {
       results: results || [],
       offers: offers || [],
       wiki: wikiInfo,
+      rates: koersen || null,          // euro-gebaseerde ECB-dagkoersen
       sources: {
         web: staat(results, !!q),
         webBron: wr.bron,                                   // welke bron het geworden is

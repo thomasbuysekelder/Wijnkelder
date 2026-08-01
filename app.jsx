@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v27";
+const APP_VERSION = "kelder-v28";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -325,6 +325,7 @@ async function fetchSearch({ query, wine, wiki, prefix = "", max = 2600 }) {
       text, items,
       offers: Array.isArray(data && data.offers) ? data.offers : [],
       wiki: (data && data.wiki) || null,
+      rates: (data && data.rates) || null,
       sources: (data && data.sources) || {},
     };
   } catch { return { text: "", items: [], offers: [], wiki: null, sources: { web: "fout", vivino: "fout" } }; }
@@ -377,15 +378,30 @@ const BEDRAG_KAAL = /\b\d{1,3}(?:[.\s]\d{3})+[,.]\d{2}\b|\b\d+[,.]\d{2}\b/g;
 const PRIJSCONTEXT = /prijs|prijzen|kopen|bestel|per\s*fles|voorraad|winkel|vanaf|aanbieding|€|\beur\b/i;
 const VERZENDKOST = /verzend|leverings?kost|shipping|porto|bezorg/i;
 const GEEN_PRIJS_ACHTER = /^\s*(punten|points|score|beoordel|rating|\/\s*(5|10|20|100)\b|%)/i;
-// Bedragen in een andere munt worden NIET omgerekend maar geweerd: een verkeerde
-// omrekening is schadelijker dan geen prijs, en een prijs uit de VS zegt met
-// verzending en invoerrechten toch weinig over wat een fles hier kost.
-const VREEMDE_MUNT = /[$£¥]|\b(usd|gbp|chf|jpy|cad|aud|dollars?|pounds?|francs?)\b/i;
+// Bedragen in een andere munt worden omgerekend met de ECB-dagkoers. Kennen we de
+// koers niet, dan wordt het bedrag geweerd in plaats van gegokt.
+const MUNT_TEKEN = { "$": "USD", "£": "GBP", "¥": "JPY" };
+// alle munten die de ECB publiceert; staat er zo'n code bij het bedrag, dan is het
+// géén euro en moet er omgerekend worden
+const ECB_MUNTEN = ["USD","JPY","BGN","CZK","DKK","GBP","HUF","PLN","RON","SEK","CHF","ISK","NOK","TRY",
+  "AUD","BRL","CAD","CNY","HKD","IDR","ILS","INR","KRW","MXN","MYR","NZD","PHP","SGD","THB","ZAR"];
+const MUNT_CODE = new RegExp(`\\b(${ECB_MUNTEN.join("|")})\\b`, "i");
+const VREEMDE_MUNT = new RegExp(`[$£¥]|\\bdollars?\\b|\\bpounds?\\b|${MUNT_CODE.source}`, "i");
+// welke munt staat er vlak bij het bedrag? ("" = euro)
+function muntBij(voor, na) {
+  const stuk = `${voor} ${na}`;
+  const code = MUNT_CODE.exec(stuk);
+  if (code) return code[1].toUpperCase();
+  if (/\bdollars?\b/i.test(stuk)) return "USD";
+  if (/\bpounds?\b/i.test(stuk)) return "GBP";
+  const teken = /[$£¥]/.exec(stuk);
+  return teken ? MUNT_TEKEN[teken[0]] : "";
+}
 // Handelaars noteren vaak exclusief btw; dat is niet wat een fles in de winkel kost.
 const EXCL_BTW = /excl\.?\s*(btw|b\.?t\.?w|vat|tax)|exclusief\s*btw|ex\.?\s*btw|zonder\s*btw|\+\s*21\s*%/i;
 const BTW_TARIEF = 1.21;   // België
 
-function snippetPrices(items, b) {
+function snippetPrices(items, b, rates) {
   const want = keyTokens(wineTerm(b));
   const out = [];
   for (const it of items || []) {
@@ -402,14 +418,22 @@ function snippetPrices(items, b) {
       // verzendkosten en puntenscores zijn geen flesprijs
       if (VERZENDKOST.test(voor)) return;
       if (GEEN_PRIJS_ACHTER.test(na)) return;
-      // andere munt dan euro: overslaan in plaats van gokken
-      if (VREEMDE_MUNT.test(tekst.slice(Math.max(0, index - 12), index)) || VREEMDE_MUNT.test(na.slice(0, 8))) return;
       let p = parseAmount(ruw);
+      // andere munt dan euro: omrekenen met de ECB-dagkoers, of weren als we die niet hebben
+      const dichtbij = tekst.slice(Math.max(0, index - 12), index);
+      let munt = "";
+      if (VREEMDE_MUNT.test(dichtbij) || VREEMDE_MUNT.test(na.slice(0, 8))) {
+        munt = muntBij(dichtbij, na.slice(0, 8));
+        const koers = munt && rates ? rates[munt] : 0;
+        if (!koers) return;                       // geen koers = geen prijs, niet gokken
+        p = p / koers;
+      }
       const zonderBtw = EXCL_BTW.test(voor) || EXCL_BTW.test(na);
-      if (zonderBtw) p = Math.round(p * BTW_TARIEF * 100) / 100;
+      if (zonderBtw) p = p * BTW_TARIEF;
+      p = Math.round(p * 100) / 100;
       if (p >= 3 && p <= 50000 && !gezien.has(p)) {
         gezien.add(p);
-        out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar, btw: zonderBtw });
+        out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar, btw: zonderBtw, munt });
       }
     };
     let m;
@@ -449,6 +473,7 @@ function pickPrice(offers, snips, b) {
     price: prijs, n: pool.length, exact: exact.length > 0, url: dichtst ? dichtst.url : "",
     years: [...new Set(pool.flatMap((p) => p.years))].sort(), bronnen,
     btw: pool.some((p) => p.btw),   // zat er een prijs excl. btw bij die we hebben bijgeteld?
+    munten: [...new Set(pool.map((p) => p.munt).filter(Boolean))],
   };
 }
 
@@ -628,7 +653,7 @@ async function lookupWineFull(b) {
   const { text: ctx, items, offers } = main;
   // prijzen uit ALLE resultaten (ook die van de recensiezoekopdracht: webshops
   // duiken daar evengoed op) samen met de Vivino-aanbiedingen
-  const snips = snippetPrices([...(items || []), ...(rev.items || [])], b);
+  const snips = snippetPrices([...(items || []), ...(rev.items || [])], b, main.rates);
   const mp = pickPrice(offers, snips, b);
   const vr = vivinoRating(offers, b);
   const lines = offerLines(offers, b);
@@ -700,7 +725,8 @@ async function lookupWineFull(b) {
 // De bron-URL komt altijd uit onze eigen lijst (via het nummer van het
 // zoekresultaat), nooit uit de tekst van het model: zo kan ze niet verzonnen zijn.
 function applyMarketPrice(res, mp, b, items) {
-  const btwNoot = mp && mp.btw ? ", btw bijgeteld" : "";
+  const btwNoot = (mp && mp.btw ? ", btw bijgeteld" : "") +
+    (mp && mp.munten && mp.munten.length ? `, omgerekend van ${mp.munten.join(" en ")} (ECB-dagkoers)` : "");
   const found = num(res.retailPrice);
   const src = String(res.priceSource || "").trim();
   const idx = parseInt(res.priceSourceIndex);
