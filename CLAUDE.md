@@ -25,9 +25,12 @@ en render-check de gewijzigde componenten. Wees extra voorzichtig met de
 opslag- en import/export-logica.
 
 ## Deploy
-Alles staat in de hoofdmap van de repo. `vercel.json` schakelt build/install op Vercel
-bewust uit: pushen naar `main` deployt de bestanden zoals ze zijn. Bouw dus altijd
-lokaal vóór het committen.
+Alles staat in de hoofdmap van de repo. Er is geen buildstap op Vercel: pushen naar
+`main` deployt de bestanden zoals ze zijn. Bouw dus altijd lokaal vóór het committen.
+`vercel.json` bevat enkel `regions: ["fra1"]` — de serverfuncties MOETEN in Europa
+draaien, want Vivino geeft een Amerikaans IP een andere (lege) catalogus terug en
+DuckDuckGo blokkeert Amerikaanse datacenter-IP's harder. Zet daar geen
+build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 
 ## Prijsbepaling
 - NOOIT een prijs gokken. Het model mag geen prijs uit eigen kennis geven: niet
