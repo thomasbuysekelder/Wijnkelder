@@ -54,9 +54,12 @@ function parseLiteResults(html) {
 // zoekopdracht wel lukte maar niets opleverde.
 const slaap = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Geeft { items, status } terug. De status zegt WAAROM Brave eventueel niets gaf,
+// want "geen sleutel" en "sleutel geweigerd" vragen om een heel ander antwoord.
 async function brave(query, poging = 0) {
   const key = process.env.BRAVE_API_KEY;
-  if (!key) return null;
+  if (!key) return { items: null, status: "geen sleutel" };
+  if (!/^\S+$/.test(key)) return { items: null, status: "sleutel bevat spaties" };
   const p = new URLSearchParams({ q: query, count: "6", country: "BE", search_lang: "nl", safesearch: "off" });
   try {
     const r = await fetch("https://api.search.brave.com/res/v1/web/search?" + p, {
@@ -64,15 +67,15 @@ async function brave(query, poging = 0) {
     });
     // gratis laag staat één bevraging per seconde toe; de app zoekt er twee tegelijk
     if (r.status === 429 && poging === 0) { await slaap(1200); return brave(query, 1); }
-    if (!r.ok) return null;
+    if (!r.ok) return { items: null, status: `geweigerd (${r.status})` };
     const j = await r.json();
     const res = ((j && j.web && j.web.results) || []).slice(0, 6).map((x) => ({
       title: strip(x.title || "").slice(0, 120),
       snippet: strip(x.description || "").slice(0, 300),
       url: String(x.url || "").slice(0, 400),
     })).filter((x) => x.title);
-    return res;
-  } catch { return null; }
+    return { items: res, status: res.length ? "ok" : "leeg" };
+  } catch (e) { return { items: null, status: "niet bereikbaar" }; }
 }
 
 // Wikipedia: gratis en zonder sleutel, voor achtergrond bij een domein of wijn.
@@ -219,11 +222,11 @@ export default async function handler(req, res) {
   try {
     // Brave eerst; ontbreekt de sleutel of faalt hij, dan DuckDuckGo als terugval.
     const web = async () => {
-      if (!q) return { items: [], bron: "" };
+      if (!q) return { items: [], bron: "", brave: "niet gevraagd" };
       const b = await brave(q);
-      if (b !== null) return { items: b, bron: "Brave" };
+      if (b.items !== null) return { items: b.items, bron: "Brave", brave: b.status };
       const d = await ddg(q);
-      return { items: d, bron: d === null ? "" : "DuckDuckGo" };
+      return { items: d, bron: d === null ? "" : "DuckDuckGo", brave: b.status };
     };
     const [wr, offers, wikiInfo] = await Promise.all([
       web(),
@@ -242,6 +245,7 @@ export default async function handler(req, res) {
       sources: {
         web: staat(results, !!q),
         webBron: wr.bron,                                   // welke bron het geworden is
+        brave: wr.brave,                                    // en waarom Brave het eventueel niet werd
         vivino: staat(offers, !!wine),
         wikipedia: !wiki ? "niet gevraagd" : wikiInfo ? "ok" : "leeg",
       },

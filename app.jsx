@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v21";
+const APP_VERSION = "kelder-v22";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -641,9 +641,13 @@ async function lookupWineFull(b) {
   // Gaven de webbronnen niets terug, dan is er niets geverifieerd: dat moet je
   // kunnen zien, anders blijft een gok van de etiketlezing er staan als feit.
   const webBron = main.sources.webBron || "de webzoekopdracht";
+  // Werd Brave niet gebruikt, zeg er dan bij waarom — anders blijft onduidelijk of
+  // de sleutel ontbreekt, geweigerd wordt, of dat Brave gewoon niets vond.
+  const braveUitleg = main.sources.brave && main.sources.brave !== "ok" && main.sources.brave !== "niet gevraagd"
+    ? ` (Brave: ${main.sources.brave})` : "";
   res.verifyNote = (items.length || rev.items.length)
     ? ""
-    : `Niet geverifieerd: ${webBron} gaf geen resultaten, dus streek, beschrijving en recensies konden niet nagekeken worden.`;
+    : `Niet geverifieerd: ${webBron} gaf geen resultaten${braveUitleg}, dus streek, beschrijving en recensies konden niet nagekeken worden.`;
   // Wordt er geen prijs gevonden terwijl een bron onbereikbaar was, zeg dat er
   // dan bij. Anders lijkt een geblokkeerde bron op "deze wijn bestaat nergens".
   if (res.retailPrice === "") {
