@@ -307,6 +307,14 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   terug in de kelder. Een fles van elders verdwijnt helemaal zodra haar laatste
   regel weg is. `logRegels()` houdt daarvoor met `bron` de oorspronkelijke regel
   bij; de rijen in het venster zijn kopieën.
+- Bij een regel horen hoogstens `LOG_FOTOS_MAX` (3) foto's. Ze worden verkleind tot
+  900 px JPEG en staan als tekst IN de kelderopslag, samen met je flessen. Die
+  opslag is maar enkele megabytes groot: `fotosPassen()` laat ze vallen zodra het
+  krap wordt (de notitie blijft dan wél bewaard) en een mislukte opslag staat
+  bovenaan in het rood. Maak die foto's dus niet groter zonder na te denken.
+- Een proefnotitie zonder afboeking schrijft een regel met `type: "geproefd"` en
+  `n: 0`. Die telt NERGENS in mee; ze bestaat om de foto's en de aangevinkte
+  woorden van dat moment te bewaren.
 - `drinkSamenvatting()` telt deze maand / dit jaar / totaal DETERMINISTISCH in code
   en geeft die cijfers aan de sommelier. Het model mag daar zelf niets bijrekenen —
   zo kan "voor hoeveel geld heb ik deze maand wijn gedronken" niet fout gaan.

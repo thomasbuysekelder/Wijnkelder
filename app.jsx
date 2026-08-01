@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v60";
+const APP_VERSION = "kelder-v61";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -68,6 +68,7 @@ const DRINK_VRAGEN = [
 // drinkstatistiek; verkocht of weggegeven hoort daar niet thuis.
 const WEG_REDENEN = [
   { k: "gedronken", label: "Gedronken", werkwoord: "afgevinkt" },
+  { k: "geproefd", label: "Geproefd", werkwoord: "genoteerd", verborgen: true },
   { k: "verkocht", label: "Verkocht", werkwoord: "verkocht" },
   { k: "weggegeven", label: "Weggegeven", werkwoord: "weggegeven" },
   { k: "kapot", label: "Kapot of verloren", werkwoord: "afgeboekt" },
@@ -210,6 +211,12 @@ const NAAM_KEY = "wijnkelder-naam";
 // Zelf toegevoegde proefwoorden, per veld uit DRINK_VRAGEN. Ze staan apart van de
 // kelder, zodat een herstel van de flessen ze nooit kan wissen.
 const WOORDEN_KEY = "wijnkelder-eigen-woorden";
+// Hoeveel foto's per logboekregel, en hoe klein ze bewaard worden. Groter maken
+// betekent minder flessen die op het toestel passen: de hele kelder staat in
+// dezelfde opslag van enkele megabytes.
+const LOG_FOTOS_MAX = 3;
+const LOG_FOTO_PX = 900;
+const LOG_FOTO_KWALITEIT = 0.6;
 
 function laadEigenWoorden() {
   try {
@@ -252,6 +259,30 @@ async function loadPrevious() {
     const list = JSON.parse(raw);
     return Array.isArray(list) ? list.map(normBottle) : null;
   } catch { return null; }
+}
+
+// Een gekozen bestand tot een kleine JPEG. Bewust kleiner dan de foto's die naar
+// het model gaan: deze blijven voorgoed op het toestel staan.
+function verkleinFoto(file, max = LOG_FOTO_PX, kwaliteit = LOG_FOTO_KWALITEIT) {
+  return new Promise((klaar) => {
+    const lezer = new FileReader();
+    lezer.onerror = () => klaar(null);
+    lezer.onload = () => {
+      const img = new Image();
+      img.onerror = () => klaar(null);
+      img.onload = () => {
+        const schaal = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.width * schaal);
+        c.height = Math.round(img.height * schaal);
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        try { klaar(c.toDataURL("image/jpeg", kwaliteit)); } catch { klaar(null); }
+      };
+      img.src = String(lezer.result || "");
+    };
+    lezer.readAsDataURL(file);
+  });
 }
 
 async function saveBottles(list) {
@@ -1315,6 +1346,7 @@ function drinkSamenvatting(bottles) {
   // oude regels hebben nog geen soort; die waren altijd gedronken
   const gedronken = rijen.filter((x) => (x.type || "gedronken") === "gedronken");
   const verkocht = rijen.filter((x) => x.type === "verkocht");
+  // "geproefd" telt nergens in mee: er ging geen fles weg
   const nu = new Date().toISOString().slice(0, 10);
   const tel = (lijst, vanaf) => {
     const r = lijst.filter((x) => String(x.d) >= vanaf);
@@ -1682,7 +1714,7 @@ export default function App() {
   };
 
   // ---- fles uit de kelder: afboeken en in het logboek zetten ----
-  const boekGedronken = ({ reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven }) => {
+  const boekGedronken = ({ reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven, kiekjes }) => {
     const b = drinkFles;
     if (!b) return;
     const n = nieuw
@@ -1702,6 +1734,7 @@ export default function App() {
       n, v: nieuw ? (money(kostte) || 0) : (effVal(b).v || 0), type: info.k,
       ...(money(opbrengst) > 0 ? { opbrengst: money(opbrengst) } : {}),
       ...(rijp ? { rijpheid: rijp.label } : {}),
+      ...(fotosPassen(bottles, kiekjes) ? { fotos: (kiekjes || []).slice(0, LOG_FOTOS_MAX) } : {}),
       ...gevuld,
     };
     const log = [...(Array.isArray(b.drinkLog) ? b.drinkLog : []), entry];
@@ -1717,7 +1750,12 @@ export default function App() {
     // Alleen proeven: de notitie wordt bewaard, de kelder blijft ongemoeid en er
     // komt geen regel in het logboek — er ging immers geen fles weg.
     if (alleenProeven) {
+      // geen fles afgeboekt, maar wel iets te bewaren: een regel met nul flessen
+      const proefRegel = (stukjes || (Array.isArray(kiekjes) && kiekjes.length))
+        ? [...(Array.isArray(b.drinkLog) ? b.drinkLog : []), { ...entry, n: 0, type: "geproefd", v: 0 }]
+        : null;
       patchBottle(b.id, {
+        ...(proefRegel ? { drinkLog: proefRegel } : {}),
         tasteNotes: nieuweNotitie,
         ...(jaren !== null && !isNaN(jaren) ? { herproefOp: String(NOW + jaren) } : {}),
         ...(antw?.punten ? { score: String(antw.punten) } : {}),
@@ -1749,6 +1787,18 @@ export default function App() {
     });
     setDrinkFles(null);
     flash(`${n} fles${n > 1 ? "sen" : ""} ${info.werkwoord} en genoteerd.`);
+  };
+
+  // Foto's staan in dezelfde opslag als je kelder, en die is beperkt (enkele MB).
+  // Passen ze er niet meer bij, dan bewaren we de notitie WEL en de foto's niet:
+  // liever een regel zonder beeld dan een kelder die niet meer bewaard raakt.
+  const fotosPassen = (lijst, kiekjes) => {
+    if (!Array.isArray(kiekjes) || !kiekjes.length) return false;
+    const nu = JSON.stringify(lijst).length;
+    const erbij = kiekjes.reduce((t, k) => t + String(k).length, 0);
+    if (nu + erbij < 3_600_000) return true;
+    flash("De foto's passen er niet meer bij: het toestel zit vol. De notitie is wel bewaard.");
+    return false;
   };
 
   // ---- etiket lezen voor een fles die niet in de kelder ligt ----
@@ -2828,7 +2878,22 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
     setAntw((a) => ({ ...a, [veld]: (a[veld] || []).filter((w) => w !== woord) }));
   };
   const fotoVeld = useRef();
+  const kiekjesVeld = useRef();
+  const [kiekjes, setKiekjes] = useState([]);
+  const [kiekFout, setKiekFout] = useState("");
   const [leest, setLeest] = useState(false);
+  const voegKiekjes = async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length) return;
+    setKiekFout("");
+    const plaats = LOG_FOTOS_MAX - kiekjes.length;
+    if (plaats <= 0) { setKiekFout(`Hoogstens ${LOG_FOTOS_MAX} foto's per keer.`); return; }
+    const nieuwe = (await Promise.all(files.slice(0, plaats).map((f) => verkleinFoto(f)))).filter(Boolean);
+    if (!nieuwe.length) { setKiekFout("Kon deze foto's niet lezen."); return; }
+    if (files.length > plaats) setKiekFout(`Enkel de eerste ${plaats} bewaard: hoogstens ${LOG_FOTOS_MAX} foto's per keer.`);
+    setKiekjes((k) => [...k, ...nieuwe].slice(0, LOG_FOTOS_MAX));
+  };
   const [kiezen, setKiezen] = useState(false);
   const [fotoFout, setFotoFout] = useState("");
   // Neemt alleen over wat gevonden werd; wat jij al intikte blijft staan.
@@ -2923,7 +2988,7 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
         ) : (
           <div style={S.field}>
             <span style={S.fieldLabel}>Wat is ermee gebeurd</span>
-            <KeuzeChips waarden={WEG_REDENEN.map((r) => r.label)} gekozen={[redenInfo.label]}
+            <KeuzeChips waarden={WEG_REDENEN.filter((r) => !r.verborgen).map((r) => r.label)} gekozen={[redenInfo.label]}
               onWissel={(l) => setReden((WEG_REDENEN.find((r) => r.label === l) || WEG_REDENEN[0]).k)} />
           </div>
         )}
@@ -2975,6 +3040,30 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
         ))}
 
         {gedronken && (
+          <div style={S.field}>
+            <span style={S.fieldLabel}>Foto's van deze fles ({kiekjes.length}/{LOG_FOTOS_MAX})</span>
+            <input ref={kiekjesVeld} type="file" accept="image/*" multiple hidden onChange={voegKiekjes} />
+            {kiekjes.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                {kiekjes.map((k, i) => (
+                  <div key={i} style={{ position: "relative" }}>
+                    <img src={k} alt="" style={S.kiekje} />
+                    <button style={S.kiekjeWeg} aria-label="Foto weghalen"
+                      onClick={() => setKiekjes((lijst) => lijst.filter((_, j) => j !== i))}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {kiekjes.length < LOG_FOTOS_MAX && (
+              <button style={{ ...S.btnGhost, width: "100%" }} onClick={() => kiekjesVeld.current && kiekjesVeld.current.click()}>
+                <Camera size={15} /> Foto toevoegen
+              </button>
+            )}
+            {kiekFout && <div style={{ ...S.mapCaption, color: "var(--amber)", marginTop: 6 }}>{kiekFout}</div>}
+          </div>
+        )}
+
+        {gedronken && (
           <label style={S.field}>
             <span style={S.fieldLabel}>En nu? Wanneer opnieuw proeven</span>
             <select style={S.input} value={herproef} onChange={(e) => setHerproef(e.target.value)}>
@@ -2996,7 +3085,7 @@ function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) 
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
         <button style={S.btnPrimary}
           disabled={nieuw && !wijn.producer && !wijn.name}
-          onClick={() => onBevestig({ reden: nieuw ? "gedronken" : reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven })}>
+          onClick={() => onBevestig({ reden: nieuw ? "gedronken" : reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven, kiekjes })}>
           <Check size={15} /> {alleenProeven
             ? "Proefnotitie bewaren"
             : `${aantal} fles${aantal > 1 ? "sen" : ""} ${nieuw ? "in het logboek" : redenInfo.werkwoord}`}
@@ -3207,6 +3296,11 @@ function LogboekModal({ bottles, onKies, onElders, onWis, onClose }) {
                     {num(e.opbrengst) > 0 ? ` · opbrengst ${eur(num(e.opbrengst) * (num(e.n) || 1))}` : ""}
                   </div>
                   {zin && <div style={{ ...S.rowSub, marginTop: 3, color: "var(--ink-dim)" }}>{zin.slice(0, 220)}</div>}
+                  {Array.isArray(e.fotos) && e.fotos.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      {e.fotos.map((f, j) => <img key={j} src={f} alt="" style={S.kiekjeKlein} />)}
+                    </div>
+                  )}
                 </button>
                 <button style={S.iconBtn} title="Deze regel terugdraaien"
                   onClick={() => onWis(e.b, e.bron)}><Trash2 size={14} /></button>
@@ -3632,6 +3726,15 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
                   const w = Array.isArray(e[v.k]) ? e[v.k].join(", ") : e[v.k];
                   return w ? <div key={v.k} style={{ color: "var(--ink-dim)" }}>{v.label}: {w}</div> : null;
                 })}
+                {Array.isArray(e.fotos) && e.fotos.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                    {e.fotos.map((f, j) => (
+                      <a key={j} href={f} target="_blank" rel="noreferrer">
+                        <img src={f} alt="" style={S.kiekje} />
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </Vak>
@@ -3933,6 +4036,9 @@ const S = {
 
   chipKeuzeRij: { display: "flex", flexWrap: "wrap", gap: 6 },
   chipKeuze: { background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "7px 11px", borderRadius: 999, fontSize: 13.5, cursor: "pointer", lineHeight: 1.2 },
+  kiekjeKlein: { width: 46, height: 46, objectFit: "cover", borderRadius: 8, border: "1px solid var(--line)" },
+  kiekje: { width: 78, height: 78, objectFit: "cover", borderRadius: 10, border: "1px solid var(--line)", display: "block" },
+  kiekjeWeg: { position: "absolute", top: -6, right: -6, width: 24, height: 24, borderRadius: 999, background: "var(--bg3)", border: "1px solid var(--line2)", color: "var(--ink)", fontSize: 15, lineHeight: 1, cursor: "pointer", padding: 0 },
   chipEigen: { borderStyle: "dashed", borderColor: "var(--gold-dim)" },
   chipTekst: { background: "transparent", border: "none", color: "inherit", font: "inherit", padding: 0, cursor: "pointer" },
   chipKruis: { background: "transparent", border: "none", color: "var(--ink-dim)", fontSize: 16, lineHeight: 1, padding: "0 2px", cursor: "pointer" },
