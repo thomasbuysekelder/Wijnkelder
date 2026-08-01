@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v11";
+const APP_VERSION = "kelder-v12";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1048,9 +1048,9 @@ export default function App() {
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); fileImport.current.click(); }}><Upload size={15} /> Excel importeren</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); exportXlsx(bottles); }}><Download size={15} /> Excel exporteren</button>
                     <div style={S.menuSep} />
-                    <button className="mi" style={{ ...S.menuItem, color: "var(--ink-dim)", fontSize: 12.5 }}
+                    <button className="mi" style={S.menuItem}
                       onClick={() => { setMenuOpen(false); setShowFeedback(true); }}>
-                      <MessageSquare size={14} /> Meld een probleem of idee
+                      <MessageSquare size={15} /> Meld een probleem of idee
                     </button>
                   </div>
                 </>
@@ -1563,6 +1563,9 @@ function BulkModal({ initial, onAdd, onClose }) {
 }
 
 // ---------- vraag de sommelier ----------
+// invoerveld: standaard ±4 regels, groeit mee tot deze maxhoogte
+const SOMM_INPUT_MIN = 96;
+const SOMM_INPUT_MAX = 220;
 const SOMM_TIPS = [
   "Welke wijnen onder 50 euro die nu op dronk zijn passen bij een vispannetje?",
   "Wat drink ik het best eerst, voor het over piek gaat?",
@@ -1573,12 +1576,20 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const scroller = useRef();
+  const inputRef = useRef();
   useEffect(() => { if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight; }, [thread, busy]);
+  // het invoerveld groeit mee met de tekst, tot de maxhoogte; daarna scrollt het
+  const grow = (el) => {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(SOMM_INPUT_MAX, Math.max(SOMM_INPUT_MIN, el.scrollHeight)) + "px";
+  };
 
   const send = async (text) => {
     const question = String(text ?? q).trim();
     if (!question || busy) return;
     setQ(""); setErr(""); setBusy(true);
+    grow(inputRef.current);
     try {
       const a = await askSommelier({ bottles, question, history: thread });
       setThread((t) => [...t, { q: question, a }]);
@@ -1624,11 +1635,12 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
 
       <div style={S.chatBar}>
         <textarea
-          style={{ ...S.input, flex: 1, minHeight: 46, maxHeight: 120, resize: "vertical", lineHeight: 1.5 }}
-          rows={1}
+          ref={inputRef}
+          style={{ ...S.input, flex: 1, minHeight: SOMM_INPUT_MIN, maxHeight: SOMM_INPUT_MAX, overflowY: "auto", resize: "vertical", lineHeight: 1.5 }}
+          rows={4}
           placeholder={thread.length ? "Stel een vervolgvraag…" : "Bv. welke wijn past bij gegrilde zeebaars?"}
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => { setQ(e.target.value); grow(e.target); }}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           disabled={bottles.length === 0} />
         <button style={{ ...S.btnPrimary, height: 46 }} onClick={() => send()} disabled={busy || !q.trim() || bottles.length === 0}>

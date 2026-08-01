@@ -57,9 +57,10 @@ lokaal vóór het committen.
   (het Vivino-aanbod, of het zoekresultaat waarnaar het model met
   `priceSourceIndex` verwijst) — nooit uit tekst van het model, zodat ze niet
   verzonnen kan zijn. Geen bron gevonden = geen link.
-- De Vivino-link is `/<domein-wijn>/w/<wijn-id>?year=<jaargang>`. Gebruik NOOIT
-  `/wines/<id>`: dat pad hoort bij een andere id-reeks en komt op een compleet
-  andere wijn uit (getest).
+- De Vivino-link is ALTIJD de zoekpagina:
+  `https://www.vivino.com/search/wines?q=<producent + wijn + jaargang>`.
+  Bouw NOOIT een link met een Vivino-id of -slug (`/wines/<id>`, `/w/<id>`,
+  `seo_name`): die paden komen op de verkeerde wijn uit.
 - DuckDuckGo beantwoordt GET-verzoeken vanaf een server met een lege pagina
   (HTTP 202). `/api/search` moet dus met POST zoeken. Elke link zit verpakt in een
   redirect (`/l/?uddg=…`); `realUrl()` pakt die uit tot de echte bron-URL.
@@ -71,6 +72,12 @@ lokaal vóór het committen.
   omgevingsvariabele `FEEDBACK_EMAIL` (sleutel in `RESEND_API_KEY`). Afzender is
   `onboarding@resend.dev`, onderwerp "Kelder-app: melding", body = melding +
   appversie.
+- Elke melding gaat daarnaast ook bovenaan `FEEDBACK.md` in de hoofdmap van de
+  repo, via de GitHub Contents API met `GITHUB_TOKEN` (repo
+  `thomasbuysekelder/Wijnkelder`, branch `main`). Formaat: `## datum · appversie`
+  gevolgd door de tekst. Dat is een EXTRA: ontbreekt de token of faalt GitHub,
+  dan wordt het stil overgeslagen — de mail vertrekt sowieso en de melder merkt
+  er niets van. De token staat enkel in de omgevingsvariabele.
 - De melder ziet enkel "Verzonden, bedankt" of "Versturen lukte niet, probeer
   later opnieuw" — nooit een foutdetail, zodat er niets over de configuratie lekt.
 - `APP_VERSION` in `app.jsx` gaat mee als appversie en moet gelijk blijven aan het

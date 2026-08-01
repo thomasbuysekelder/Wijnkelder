@@ -75,14 +75,10 @@ async function ddg(query) {
   return [];
 }
 
-// Link naar de Vivino-pagina van precies deze wijn en jaargang. Het patroon is
-// /<domein-wijn>/w/<wijn-id>?year=<jaargang>; zonder seo-namen valt hij terug op
-// de zoekpagina. (/wines/<id> NIET gebruiken: dat komt op een andere wijn uit.)
+// Bron-link naar Vivino: ALTIJD de zoekpagina op naam + jaargang.
+// Nooit id's of slugs gebruiken — die leiden naar de verkeerde wijn.
 function vivinoUrl(w, year) {
-  const slug = [w && w.winery && w.winery.seo_name, w && w.seo_name].filter(Boolean).join("-");
-  const q = year ? `?year=${year}` : "";
-  if (slug && w.id) return `https://www.vivino.com/${slug}/w/${w.id}${q}`;
-  const term = [w && w.winery && w.winery.name, w && w.name].filter(Boolean).join(" ").trim();
+  const term = [w && w.winery && w.winery.name, w && w.name, year].filter(Boolean).join(" ").trim();
   return term ? "https://www.vivino.com/search/wines?q=" + encodeURIComponent(term) : "";
 }
 
