@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v29";
+const APP_VERSION = "kelder-v30";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -713,8 +713,13 @@ async function lookupWineFull(b) {
   if (res.retailPrice === "") {
     const kapot = (v) => v === "onbereikbaar" || v === "fout";
     const web = main.sources.webBron || "de webzoekopdracht";
+    // Vivino kan resultaten geven die geen van alle bij DEZE wijn horen; dat is iets
+    // anders dan een lege of onbereikbare bron en moet apart benoemd worden.
+    const passend = (offers || []).filter((o) => offerMatch(o, b) >= 0.55).length;
     const stuk = [
-      kapot(main.sources.vivino) ? "Vivino was niet bereikbaar" : main.sources.vivino === "leeg" ? "Vivino gaf niets terug" : "",
+      kapot(main.sources.vivino) ? "Vivino was niet bereikbaar"
+        : main.sources.vivino === "leeg" ? "Vivino gaf niets terug"
+        : !passend ? `Vivino kende deze wijn niet (${offers.length} andere resultaten)` : "",
       kapot(main.sources.web) ? `${web} was niet bereikbaar` : main.sources.web === "leeg" ? `${web} gaf niets terug` : "",
     ].filter(Boolean);
     if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(", ")}`;
