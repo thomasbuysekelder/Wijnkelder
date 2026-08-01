@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v10";
+const APP_VERSION = "kelder-v11";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -660,7 +660,7 @@ function cellarContext(bottles) {
 
 // Sonnet in plaats van Haiku: dit is de enige functie waar de eigenaar bewust
 // voor een duurder model koos (±2 cent per vraag). Zie CLAUDE.md.
-const SOMMELIER_MODEL = "claude-sonnet-5";
+const SOMMELIER_MODEL = "claude-sonnet-4-6";
 const SOMM_SYSTEM =
   "Je bent de persoonlijke sommelier van deze wijnkelder. Je krijgt een KANDIDATENLIJST: dat zijn de flessen die de app al selecteerde omdat ze aan de harde criteria van de vraag voldoen. " +
   "Regels: (1) beveel UITSLUITEND flessen uit die kandidatenlijst aan, nooit een wijn die er niet in staat; " +

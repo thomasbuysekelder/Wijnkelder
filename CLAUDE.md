@@ -112,7 +112,7 @@ lokaal vóór het committen.
   op 600 tekens).
 
 ## Uitzondering op de modelregel: de sommelier draait op Sonnet
-- `SOMMELIER_MODEL = "claude-sonnet-5"` is de ENIGE plek waar geen Haiku draait.
+- `SOMMELIER_MODEL = "claude-sonnet-4-6"` is de ENIGE plek waar geen Haiku draait.
   De eigenaar keurde hiervoor 3 à 5 cent per vraag goed, omdat de kwaliteit van
   het advies hier het belangrijkste is. Alle andere aanroepen blijven Haiku.
 - In de praktijk kost een vraag ±1,5 cent: door de voorfiltering is de
