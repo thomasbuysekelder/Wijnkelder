@@ -387,7 +387,32 @@ async function paginaPrijzen(urls, term) {
 const geoCache = new Map();
 let laatsteGeo = 0;
 
-async function geocode(q) {
+// Een appellatie is vaak geen plaats. "Pessac-Leognan" kent de kaart niet, maar
+// "Leognan" wel; "Gevrey-Chambertin 1er Cru" niet, "Gevrey-Chambertin" wel. Daarom
+// proberen we het stap voor stap eenvoudiger, tot er iets gevonden wordt.
+function geoVarianten(q) {
+  const delen = String(q || "").split(",").map((t) => t.trim()).filter(Boolean);
+  const land = delen.length > 1 ? delen[delen.length - 1] : "";
+  const streek = (delen.length > 1 ? delen.slice(0, -1).join(", ") : delen[0]) || "";
+  const met = (t) => [t, land].filter(Boolean).join(", ");
+  const uit = [String(q || "").trim()];
+  const kaal = streek
+    .replace(/\(.*?\)/g, " ")
+    .replace(/\b(grand|premier|1er|1e)\s*cru\b/gi, " ")
+    .replace(/\b(aoc|aop|doc|docg|igt|igp|classico|riserva|superiore)\b/gi, " ")
+    .replace(/\s+/g, " ").trim();
+  if (kaal && kaal !== streek) uit.push(met(kaal));
+  // samengestelde namen uit elkaar halen, de laatste eerst: die is meestal de plaats
+  const stukken = kaal.split(/[-\u2013/]/).map((t) => t.trim()).filter((t) => t.length > 2);
+  if (stukken.length > 1) for (const st of [...stukken].reverse()) uit.push(met(st));
+  // staat er een hele omschrijving ("Passopisciaro, Etna, Sicilie"), probeer dan ook
+  // het eerste deel apart: dat is meestal het dorp of het domein
+  const losse = streek.split(",").map((t) => t.trim()).filter((t) => t.length > 2);
+  if (losse.length > 1) { uit.push(met(losse[0])); uit.push(met(losse[losse.length - 1])); }
+  return [...new Set(uit.filter(Boolean))];
+}
+
+async function geocodeEen(q) {
   const sleutel = String(q || "").trim().toLowerCase();
   if (!sleutel) return null;
   if (geoCache.has(sleutel)) return geoCache.get(sleutel);
@@ -409,6 +434,25 @@ async function geocode(q) {
   } catch { return null; }
 }
 
+// Probeer de varianten op volgorde. Levert niets iets op, dan pas de tweede
+// omschrijving (bv. het dorp dat bij de fles staat), en als allerlaatste het land:
+// een ruwe plek is nog altijd beter dan geen plek, en de naam die we teruggeven
+// zegt eerlijk waar de speld staat.
+async function geocode(q, reserve) {
+  for (const v of geoVarianten(q)) {
+    const hit = await geocodeEen(v);
+    if (hit) return hit;
+  }
+  if (reserve) {
+    for (const v of geoVarianten(reserve)) {
+      const hit = await geocodeEen(v);
+      if (hit) return hit;
+    }
+  }
+  const land = String(q || "").split(",").map((t) => t.trim()).filter(Boolean).pop();
+  return land ? await geocodeEen(land) : null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).json({ error: "Alleen POST" }); return; }
   const body = req.body || {};
@@ -417,7 +461,7 @@ export default async function handler(req, res) {
   const wiki = String(body.wiki || "").slice(0, 120);
   const pages = Array.isArray(body.pages) ? body.pages.slice(0, 6).map(String) : null;
   const geo = String(body.geo || "").slice(0, 160);
-  if (geo) { res.status(200).json({ results: [], offers: [], wiki: null, geo: await geocode(geo), sources: {} }); return; }
+  if (geo) { res.status(200).json({ results: [], offers: [], wiki: null, geo: await geocode(geo, body.geoReserve), sources: {} }); return; }
   if (!q && !wine && !wiki && !pages) { res.status(400).json({ error: "query, wine, wiki of pages ontbreekt" }); return; }
 
   // aparte modus: enkel winkelpagina's openen en hun prijs uitlezen

@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v56";
+const APP_VERSION = "kelder-v57";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -383,12 +383,12 @@ const SEARCH_URL = "/api/search";
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
 // De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
 // verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
-async function fetchSearch({ query, wine, wiki, pages, term, geo, prefix = "", max = 2600 }) {
+async function fetchSearch({ query, wine, wiki, pages, term, geo, geoReserve, prefix = "", max = 2600 }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, wine, wiki, pages, term, geo }),
+      body: JSON.stringify({ query, wine, wiki, pages, term, geo, geoReserve }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
@@ -898,10 +898,14 @@ async function lookupWineFull(b) {
   // Coördinaten uit een echte geocoder in plaats van uit het model: zo krijgt elke
   // jaargang van dezelfde wijn hetzelfde punt, en klopt het ook nog.
   const plek = [res.region || b.region, res.country || b.country].filter(Boolean).join(", ");
-  const g = plek ? (await fetchSearch({ geo: plek })).geo : null;
+  // Een appellatie is vaak geen plaats op de kaart. Lukt de streek niet, dan mag de
+  // omschrijving bij de fles ("Passopisciaro, Etna, Sicilië") het nog proberen, en
+  // pas daarna het land. De naam die we tonen komt van de geocoder zelf, zodat het
+  // opschrift bij de speld ook echt zegt waar ze staat.
+  const g = plek ? (await fetchSearch({ geo: plek, geoReserve: res.placeName || b.placeName || "" })).geo : null;
   res.lat = g ? g.lat : "";
   res.lng = g ? g.lng : "";
-  if (g && !res.placeName) res.placeName = plek;
+  if (g) res.placeName = g.naam || res.placeName || plek;
 
   // Gaven de webbronnen niets terug, dan is er niets geverifieerd: dat moet je
   // kunnen zien, anders blijft een gok van de etiketlezing er staan als feit.
@@ -2206,11 +2210,6 @@ function BottleFields({ v, on, boven }) {
           placeholder={money(v.retailValue) > 0 ? `leeg = retail (${eur(money(v.retailValue))})` : "leeg = retail"} />
       </label>
       <div style={S.formRow}>{fld("drinkFrom", "Drink vanaf", "number")}{fld("drinkTo", "Drink tot", "number")}</div>
-      <label style={S.field}>
-        <span style={S.fieldLabel}>Mijn proefnotities</span>
-        <textarea style={{ ...S.input, minHeight: 110, resize: "vertical", lineHeight: 1.5 }} rows={5} value={v.tasteNotes ?? ""} onChange={(e) => on("tasteNotes", e.target.value)}
-          placeholder="Kleur, neus, smaak, evolutie…" />
-      </label>
       <label style={S.field}>
         <span style={S.fieldLabel}>Notities</span>
         <textarea style={{ ...S.input, minHeight: 90, resize: "vertical", lineHeight: 1.5 }} rows={4} value={v.notes ?? ""} onChange={(e) => on("notes", e.target.value)} />

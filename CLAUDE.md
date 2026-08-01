@@ -140,6 +140,19 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   zijn chips van gelijke hoogte; lange waarden (druif, streek) zijn `Feit`-rijen met
   een label links. Zet nooit een lange tekst in een chip: die neemt dan een hele rij.
 
+## Waar de wijn gemaakt wordt
+- Een APPELLATIE is vaak geen plaats op de kaart: "Pessac-Léognan" en
+  "Gevrey-Chambertin 1er Cru" vinden niets, "Léognan" en "Gevrey-Chambertin" wel.
+  `geoVarianten()` maakt de vraag stap voor stap eenvoudiger (haakjes weg, "grand
+  cru" weg, samengestelde namen splitsen, losse delen van een omschrijving).
+- Volgorde: eerst de streek, dan de omschrijving bij de fles (`geoReserve`, bv.
+  "Passopisciaro, Etna, Sicilië" → het echte dorp op de Etna), en pas als laatste
+  het land. Een ruwe plek is beter dan geen plek.
+- De naam bij de speld komt van de GEOCODER zelf, niet van het model: zo zegt het
+  opschrift ook echt waar de speld staat.
+- Het bewerkvenster bevat GEEN proefnotities en geen sommelier: die horen op de
+  detailkaart, waar het draaiboek naast staat.
+
 ## Kaart
 - De knop "Kaart" in de kop toont alle flessen die een `lat`/`lng` hebben op een
   echte kaart (`KaartModal`). Flessen die nog geen locatie hebben, worden geteld
