@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v49";
+const APP_VERSION = "kelder-v50";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -416,6 +416,73 @@ const keyTokens = (s) => String(s || "").toLowerCase().normalize("NFD").replace(
   .replace(/[^a-z0-9]+/g, " ").split(" ").filter((t) => t.length > 2 && !PRICE_STOP.has(t));
 const tokenRatio = (want, hay) => (want.length ? want.filter((t) => hay.includes(t)).length / want.length : 0);
 // hoe zeker hoort dit aanbod bij deze fles? 0..1
+// Woorden die niets over de identiteit van een wijn zeggen: elke Bourgogne is
+// "grand cru", elke Chianti is "classico". Ze mogen dus geen verschil maken.
+const ALGEMEEN = new Set([
+  "grand", "cru", "crus", "premier", "1er", "1e", "village", "villages", "grands",
+  "classico", "riserva", "reserva", "reserve", "superiore", "supérieur", "superieur",
+  "docg", "doc", "aoc", "aop", "igt", "igp", "doca", "vdp", "gran", "seleccion",
+  "vino", "vin", "vins", "wine", "wines", "wein", "wijn", "vino", "vinho",
+  "rood", "rouge", "rosso", "red", "wit", "blanc", "bianco", "white", "rose", "rosato",
+  "brut", "sec", "demi", "extra", "millesime", "millésime", "cuvee", "cuvée",
+  "domaine", "domain", "chateau", "château", "castello", "tenuta", "azienda", "agricola",
+  "cantina", "cantine", "weingut", "bodega", "bodegas", "quinta", "maison", "cave", "caves",
+  "fattoria", "podere", "estate", "winery", "societe", "société", "fils", "pere", "père",
+  "freres", "frères", "figli", "hijos", "and", "the", "van", "der", "des", "les", "del",
+  "della", "delle", "dei", "degli", "produttori", "societa", "società", "srl", "spa",
+  "france", "italia", "italie", "italy", "espana", "españa", "spanje", "product",
+]);
+
+// Een woord telt als "gekend" wanneer het al ergens bij de fles staat. We
+// vergelijken soepel op de eerste vijf letters, zodat toscana en toscane, en
+// bourgogne en borgogna, niet als een andere wijn tellen.
+function eigenWoorden(b) {
+  const uit = new Set();
+  for (const veld of [b.producer, b.name, b.region, b.country, b.grape, b.vintage]) {
+    for (const t of keyTokens(veld)) uit.add(t);
+  }
+  return uit;
+}
+
+const gekendWoord = (t, eigen) => {
+  if (/^\d+$/.test(t)) return true;              // jaartallen en inhoudsmaten
+  if (ALGEMEEN.has(t)) return true;
+  if (eigen.has(t)) return true;
+  for (const e of eigen) {
+    if (e.length >= 5 && t.length >= 5 && (e.startsWith(t.slice(0, 5)) || t.startsWith(e.slice(0, 5)))) return true;
+  }
+  return false;
+};
+
+// Welke woorden voegt dit resultaat toe die NIET bij mijn fles horen? Dat is het
+// gevaarlijke geval: "Chambertin Clos de Bèze" is een ANDERE wijn dan "Chambertin",
+// ook al staat mijn hele naam erin.
+function vreemdeWoorden(tekst, b) {
+  const eigen = eigenWoorden(b);
+  return [...new Set(keyTokens(tekst))].filter((t) => !gekendWoord(t, eigen));
+}
+
+// Zit mijn eigen naam er wel in? Anders is het gewoon een andere wijn van
+// dezelfde producent, zoals Clos de la Roche bij een zoektocht naar Chambertin.
+function naamKlopt(offer, b) {
+  const mijn = keyTokens(b.name);
+  if (!mijn.length) return true;
+  const hay = [...keyTokens(offer.name), ...keyTokens(offer.producer)];
+  return tokenRatio(mijn, hay) >= 0.6;
+}
+
+// De aanbiedingen die het best bij DEZE wijn passen. Niet "alles boven een
+// drempel", maar de groep met de MINSTE vreemde woorden: zo wint "Chambertin
+// Grand Cru" het van "Chambertin Clos de Bèze Grand Cru", en blijven bij Soldera
+// alle aanbiedingen van "Case Basse Sangiovese Toscana" gewoon staan.
+function vivinoKeuze(offers, b) {
+  const pas = (offers || []).filter((o) => offerMatch(o, b) >= 0.55 && naamKlopt(o, b));
+  if (!pas.length) return { lijst: [], vreemd: 0 };
+  const met = pas.map((o) => ({ o, vreemd: vreemdeWoorden(o.name, b).length }));
+  const minste = Math.min(...met.map((x) => x.vreemd));
+  return { lijst: met.filter((x) => x.vreemd === minste).map((x) => x.o), vreemd: minste };
+}
+
 function offerMatch(offer, b) {
   const hay = [...keyTokens(offer.producer), ...keyTokens(offer.name)];
   const p = keyTokens(b.producer), n = keyTokens(b.name);
@@ -484,6 +551,10 @@ function snippetPrices(items, b, rates) {
     // hoort dit resultaat wel bij deze wijn?
     const hay = keyTokens(tekst);
     if (!want.length || tokenRatio(want, hay) < 0.6) continue;
+    // De titel zegt WELKE wijn de winkel verkoopt. Staat daar een woord in dat
+    // niets met mijn fles te maken heeft, dan is het een andere wijn — zo kwam de
+    // prijs van een Gevrey-Chambertin op een Chambertin Grand Cru terecht.
+    if (vreemdeWoorden(it.title || "", b).length) continue;
     if (NIET_FLES.test(tekst)) continue;
     const jaar = (tekst.match(/\b(19[5-9]\d|20[0-4]\d)\b/g) || []).map(Number);
     const gezien = new Set();
@@ -531,8 +602,8 @@ const nearestUrl = (pool, price) =>
 // Meerdere bronnen maken de prijs robuuster dan één bron, en met de mediaan weegt
 // één uitschieter (een verkeerde wijn, een doosprijs) niet door.
 function pickPrice(offers, snips, b) {
-  const uitVivino = (offers || [])
-    .filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55)
+  const uitVivino = vivinoKeuze(offers, b).lijst
+    .filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750))
     .map((o) => ({ price: num(o.price), url: o.url || "", years: [parseInt(o.vintage)].filter(Boolean), bron: "Vivino" }));
   const uitWeb = (snips || []).map((s) => ({ ...s, bron: s.title || "zoekresultaat" }));
   const alle = [...uitVivino, ...uitWeb];
@@ -554,7 +625,7 @@ function pickPrice(offers, snips, b) {
 
 // kies een marktprijs: eerst de exacte jaargang, anders naburige jaargangen van dezelfde wijn
 function marketPrice(offers, b) {
-  const cand = (offers || []).filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55);
+  const cand = vivinoKeuze(offers, b).lijst.filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750));
   if (!cand.length) return null;
   const y = parseInt(b.vintage);
   const exact = y ? cand.filter((o) => parseInt(o.vintage) === y) : [];
@@ -572,7 +643,7 @@ function marketPrice(offers, b) {
 // harde brondata en gaat dus vóór op wat het model uit de naam zou afleiden.
 // Etiketfoto van het best passende aanbod, bij voorkeur van de eigen jaargang.
 function vivinoImage(offers, b) {
-  const passend = (offers || []).filter((o) => o.image && offerMatch(o, b) >= 0.55);
+  const passend = vivinoKeuze(offers, b).lijst.filter((o) => o.image);
   if (!passend.length) return "";
   const y = parseInt(b.vintage);
   const exact = y ? passend.filter((o) => parseInt(o.vintage) === y) : [];
@@ -580,7 +651,7 @@ function vivinoImage(offers, b) {
 }
 
 function vivinoOrigin(offers, b) {
-  const beste = (offers || []).filter((o) => (o.region || o.country) && offerMatch(o, b) >= 0.55)
+  const beste = vivinoKeuze(offers, b).lijst.filter((o) => o.region || o.country)
     .sort((a, c) => offerMatch(c, b) - offerMatch(a, b))[0];
   return beste ? { region: beste.region || "", country: beste.country || "" } : null;
 }
@@ -588,7 +659,7 @@ function vivinoOrigin(offers, b) {
 // Vivino-score van dezelfde wijn: eerst deze jaargang, anders de jaargang met de
 // meeste beoordelingen (die wordt dan expliciet als 'andere jaargang' gemeld)
 function vivinoRating(offers, b) {
-  const cand = (offers || []).filter((o) => num(o.rating) > 0 && num(o.ratings) > 0 && offerMatch(o, b) >= 0.55);
+  const cand = vivinoKeuze(offers, b).lijst.filter((o) => num(o.rating) > 0 && num(o.ratings) > 0);
   if (!cand.length) return null;
   const best = (arr) => arr.reduce((a, c) => (num(c.ratings) > num(a.ratings) ? c : a));
   const y = parseInt(b.vintage);
@@ -651,6 +722,9 @@ async function analyzePhoto(images) {
     max_tokens: 1200,
     system:
       "Je bent een ervaren sommelier en wijnexpert. De foto's tonen ALLEMAAL DEZELFDE fles (bv. voor- en achteretiket); combineer alle informatie tot één identificatie. " +
+      "Op een etiket staan ook woorden die GEEN naam zijn: 'Azienda Agricola', 'Domaine', 'Château', 'Tenuta', 'Cantina', 'Weingut', 'Bodegas', 'Quinta', 'Società Agricola', 'Imbottigliato all'origine', 'Mis en bouteille', 'Produce of'. " +
+      "Zet zo'n woord NOOIT alleen in 'producer': zoek de echte naam van het huis die erbij staat. Vind je die niet, laat 'producer' dan leeg in plaats van een rechtsvorm te geven. " +
+      "Zet NOOIT de jaargang, het alcoholpercentage of de inhoud (75 cl) in 'name'; het jaartal hoort enkel in 'vintage'. Is er geen aparte cuvéenaam, gebruik dan de appellatie als 'name'. " +
       "Bepaal alles uit het etiket en je eigen kennis, zonder externe bronnen. Geef GEEN prijs: prijzen worden apart opgezocht bij echte winkels. Hou de beschrijving op één korte zin. " +
       "Begin je antwoord met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige, geldige JSON-object volgens het schema, zonder enige tekst, uitleg of markdown ervoor of erna.",
     messages: [{
@@ -665,7 +739,7 @@ async function analyzePhoto(images) {
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon de wijn niet lezen uit dit resultaat.");
-  return parsed;
+  return schoonEtiket(parsed);
 }
 
 // identify a wine from a typed name (fallback when a photo isn't recognized)
@@ -815,7 +889,7 @@ async function lookupWineFull(b) {
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
-  const res = applyReviews(applyMarketPrice(parsed, mp, b, items, main.rates), vr);
+  const res = applyReviews(applyMarketPrice(parsed, mp, b, items, main.rates, offers), vr);
   // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
   const etiket = vivinoImage(offers, b);
   if (etiket) res.imageUrl = etiket;
@@ -864,7 +938,12 @@ async function lookupWineFull(b) {
 // uit de zoekresultaten haalde (met bron), (4) niets — dan blijft de prijs leeg.
 // De bron-URL komt altijd uit onze eigen lijst (via het nummer van het
 // zoekresultaat), nooit uit de tekst van het model: zo kan ze niet verzonnen zijn.
-function applyMarketPrice(res, mp, b, items, rates) {
+function applyMarketPrice(res, mp, b, items, rates, offers) {
+  // welke wijn heeft Vivino ons eigenlijk gegeven? Wijkt die naam af van wat er
+  // bij de fles staat, dan hoort dat in de notitie
+  const gekozen = vivinoKeuze(offers, b).lijst[0];
+  const anders = gekozen && keyTokens(gekozen.name).join(" ") !== keyTokens(b.name).join(" ")
+    ? ` \u2014 Vivino noemt deze wijn "${gekozen.name}"` : "";
   const btwNoot = (mp && mp.btw ? ", btw bijgeteld" : "") +
     (mp && mp.munten && mp.munten.length ? `, omgerekend van ${mp.munten.join(" en ")} (ECB-dagkoers)` : "");
   const found = num(res.retailPrice);
@@ -917,6 +996,7 @@ function applyMarketPrice(res, mp, b, items, rates) {
   }
   // Alle opgezochte prijzen gelden voor een fles van 75 cl. Voor een magnum of een
   // halve fles rekenen we evenredig om, en zeggen we dat er uitdrukkelijk bij.
+  if (mp && anders && num(res.retailPrice) > 0) res.priceNote += anders;
   const ml = num(b.volumeMl) || 750;
   if (ml !== 750 && num(res.retailPrice) > 0) {
     res.retailPrice = Math.round(num(res.retailPrice) * (ml / 750) * 100) / 100;
@@ -936,7 +1016,25 @@ function applyReviews(res, vr) {
 }
 
 // map an analysis/search result into a bottle draft
-function resultToData(res) {
+// Rechtsvormen zijn geen producentnaam, en een jaartal is geen wijnnaam. Wat het
+// model daar toch in zet, halen we er hier uit: anders zoekt de app verder op
+// "Azienda Agricola" en vindt ze nooit de juiste wijn.
+const RECHTSVORM = /^(azienda\s+agricola|societa\s+agricola|società\s+agricola|domaine|domain|ch(a|â)teau|tenuta|cantina|cantine|weingut|bodegas?|quinta|maison|fattoria|podere|winery|estate|casa|vinicola|vi(n|ñ)edos)$/i;
+
+function schoonEtiket(d) {
+  const uit = { ...d };
+  const kaal = (x) => String(x || "").trim().replace(/[.,;]+$/, "");
+  if (RECHTSVORM.test(kaal(uit.producer))) uit.producer = "";
+  // een naam die enkel een getal is (jaartal, inhoud) zegt niets
+  if (/^[\d\s.,%clL-]+$/.test(kaal(uit.name))) uit.name = "";
+  // stond de jaargang achteraan de naam, dan mag ze daar weg
+  const jaar = String(uit.vintage || "").match(/\d{4}/);
+  if (jaar) uit.name = String(uit.name || "").replace(new RegExp(`\\b${jaar[0]}\\b`, "g"), "").replace(/\s+/g, " ").trim();
+  return uit;
+}
+
+function resultToData(ruw) {
+  const res = schoonEtiket(ruw);
   return {
     ...EMPTY, id: uid(),
     producer: res.producer || "", name: res.name || "",
@@ -1536,7 +1634,7 @@ export default function App() {
   };
 
   // ---- fles uit de kelder: afboeken en in het logboek zetten ----
-  const boekGedronken = ({ reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw }) => {
+  const boekGedronken = ({ reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven }) => {
     const b = drinkFles;
     if (!b) return;
     const n = nieuw
@@ -1568,6 +1666,18 @@ export default function App() {
     // "mooi op dronk" en "over de piek" betekenen: nu bekijken. Een termijn in
     // jaren zet de fles pas later in het filter.
     const jaren = rijp ? rijp.jaren : (String(herproef).startsWith("j") ? parseInt(String(herproef).slice(1)) : null);
+    // Alleen proeven: de notitie wordt bewaard, de kelder blijft ongemoeid en er
+    // komt geen regel in het logboek — er ging immers geen fles weg.
+    if (alleenProeven) {
+      patchBottle(b.id, {
+        tasteNotes: nieuweNotitie,
+        ...(jaren !== null && !isNaN(jaren) ? { herproefOp: String(NOW + jaren) } : {}),
+        ...(antw?.punten ? { score: String(antw.punten) } : {}),
+      });
+      setDrinkFles(null);
+      flash(stukjes ? "Proefnotitie bewaard." : "Niets ingevuld, dus niets bewaard.");
+      return;
+    }
     if (nieuw) {
       // een fles van elders wordt een gewone wijn met nul flessen in de kelder,
       // zodat het logboek, de proefnotitie en de sommelier er alles mee kunnen
@@ -1799,7 +1909,7 @@ export default function App() {
               <button style={S.btnGhost} onClick={() => setMenuOpen((o) => !o)} aria-label="Meer"><MoreHorizontal size={16} /></button>
               {menuOpen && (
                 <>
-                  <div style={S.menuBackdrop} onClick={() => setMenuOpen(false)} />
+                  <div style={S.menuBackdrop} onPointerDown={() => setMenuOpen(false)} onClick={() => setMenuOpen(false)} />
                   <div style={S.menu}>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowBackup(true); }}><Save size={15} /> Backup (kopieer)</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowRestore(true); }}><Clipboard size={15} /> Herstel (plak)</button>
@@ -1925,8 +2035,10 @@ export default function App() {
         onEdit={() => { setEdit(detail); setDetail(null); }}
         onEnrich={() => enrichDetail(detail)} onSave={updateBottle}
         onPatch={(patch) => patchBottle(detail.id, patch)}
+        onProeven={() => setDrinkFles({ ...detail, _proeven: true })}
         onGedronken={() => setDrinkFles(detail)} />}
-      {drinkFles && <DrinkModal b={drinkFles} nieuw={!!drinkFles._nieuw} onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
+      {drinkFles && <DrinkModal b={drinkFles} nieuw={!!drinkFles._nieuw} alleenProeven={!!drinkFles._proeven}
+        onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
       {showKaart && <KaartModal bottles={kelder} onKies={(b) => setDetail(b)} onClose={() => setShowKaart(false)} />}
       {showLog && <LogboekModal bottles={bottles} onKies={(b) => setDetail(b)} onWis={wisLogRegel}
         onElders={() => { setShowLog(false); setDrinkFles({ ...EMPTY, id: uid(), quantity: "1", _nieuw: true }); }}
@@ -2032,7 +2144,7 @@ function EmptyState({ hasBottles, onPhoto, onImport, onAdd, onTemplate }) {
 
 // ---------- edit modal ----------
 // ---------- shared bottle form (used by edit + photo review) ----------
-function BottleFields({ v, on }) {
+function BottleFields({ v, on, boven }) {
   const fld = (k, label, type = "text", w) => (
     <label key={k} style={{ ...S.field, flex: w || 1 }}>
       <span style={S.fieldLabel}>{label}</span>
@@ -2042,6 +2154,7 @@ function BottleFields({ v, on }) {
   return (
     <div style={S.form}>
       <div style={S.formRow}>{fld("producer", "Producent")}{fld("name", "Wijn / cuvée")}</div>
+      {boven}
       <div style={S.formRow}>
         {fld("vintage", "Jaargang", "text", 0.7)}
         <label style={{ ...S.field, flex: 0.9 }}>
@@ -2094,13 +2207,12 @@ function EditModal({ edit, setEdit, onSave, onMultiVintage }) {
         <h3 style={S.modalTitle}>{edit.id ? "Fles bewerken" : "Nieuwe fles"}</h3>
         <button style={S.iconBtn} onClick={() => setEdit(null)}><X size={18} /></button>
       </div>
-      {onMultiVintage && (
-        <button style={{ ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "center" }}
+      <BottleFields v={edit} on={set} boven={onMultiVintage && (
+        <button style={{ ...S.btnGhost, width: "100%", justifyContent: "center" }}
           onClick={() => onMultiVintage(edit)} disabled={!canMulti}>
           <Layers size={15} /> Meerdere jaargangen van deze wijn
         </button>
-      )}
-      <BottleFields v={edit} on={set} />
+      )} />
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={() => setEdit(null)}>Annuleren</button>
         <button style={S.btnPrimary} onClick={onSave}><Check size={15} /> Opslaan</button>
@@ -2190,17 +2302,6 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
     } finally { setSearching(null); }
   };
 
-  const SearchRow = ({ job }) => (
-    <div style={S.searchRow}>
-      <input style={{ ...S.input, flex: 1 }} placeholder="Niet juist? Zoek op naam, bv. Passopisciaro Contrada G 2015"
-        value={queries[job.id] || ""} onChange={(e) => setQueries({ ...queries, [job.id]: e.target.value })}
-        onKeyDown={(e) => { if (e.key === "Enter") doSearch(job.id); }} />
-      <button style={S.btnGhost} onClick={() => doSearch(job.id)} disabled={searching === job.id}>
-        {searching === job.id ? <Loader2 className="spin" size={15} /> : <Search size={15} />} Zoek
-      </button>
-    </div>
-  );
-
   return (
     <Overlay onClose={onClose} wide>
       <div style={S.modalHead}>
@@ -2244,7 +2345,11 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
                     <Layers size={15} /> Meerdere jaargangen van deze wijn
                   </button>
                 )}
-                {!busy(job) && <SearchRow job={job} />}
+                {!busy(job) && (
+                  <ZoekRij waarde={queries[job.id] || ""} bezig={searching === job.id}
+                    onWijzig={(v) => setQueries((q) => ({ ...q, [job.id]: v }))}
+                    onZoek={() => doSearch(job.id)} />
+                )}
               </div>
             </div>
 
@@ -2268,9 +2373,10 @@ function Overlay({ children, onClose, small, wide, full }) {
   const box = full
     ? { ...S.modal, ...S.modalFull }
     : { ...S.modal, maxWidth: small ? 440 : wide ? 720 : 620 };
+  const buiten = (e) => { if (e.target === e.currentTarget) onClose(); };
   return (
-    <div style={{ ...S.overlay, padding: full ? 8 : 16 }} onClick={onClose}>
-      <div className="modalcard" style={box} onClick={(e) => e.stopPropagation()}>
+    <div style={{ ...S.overlay, padding: full ? 8 : 16 }} onPointerDown={buiten} onClick={buiten}>
+      <div className="modalcard" style={box}>
         {children}
       </div>
     </div>
@@ -2539,7 +2645,9 @@ function KeuzeChips({ waarden, gekozen, onWissel }) {
   );
 }
 
-function DrinkModal({ b, nieuw, onBevestig, onClose }) {
+// alleenProeven = het draaiboek zonder een fles af te boeken: je noteert wat je
+// proefde, de kelder blijft ongemoeid.
+function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
   const maxAantal = nieuw ? 12 : Math.max(1, num(b.quantity) || 1);
   const vandaag = new Date().toISOString().slice(0, 10);
   const [reden, setReden] = useState("gedronken");
@@ -2558,14 +2666,14 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
     return { ...a, [k]: lijst.includes(w) ? lijst.filter((x) => x !== w) : [...lijst, w] };
   });
   const waarde = nieuw ? money(kostte) : effVal(b).v;
-  const gedronken = nieuw || reden === "gedronken";
+  const gedronken = nieuw || alleenProeven || reden === "gedronken";
   const redenInfo = WEG_REDENEN.find((r) => r.k === reden) || WEG_REDENEN[0];
 
   return (
     <Overlay onClose={onClose} full>
       <div style={S.modalHead}>
         <div style={{ minWidth: 0 }}>
-          <h3 style={S.modalTitle}>{nieuw ? "Elders gedronken" : "Fles uit de kelder"}</h3>
+          <h3 style={S.modalTitle}>{nieuw ? "Elders gedronken" : alleenProeven ? "Proefnotitie" : "Fles uit de kelder"}</h3>
           <div style={{ ...S.rowSub, marginTop: 3 }}>
             {nieuw
               ? "Een fles die niet in je kelder lag — op restaurant, bij vrienden, op een proeverij."
@@ -2576,7 +2684,7 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", ...S.form }}>
-        {nieuw ? (
+        {alleenProeven ? null : nieuw ? (
           <>
             <div style={S.formRow}>
               <label style={{ ...S.field, flex: 1 }}>
@@ -2615,7 +2723,7 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
         )}
 
         <div style={S.formRow}>
-          <div style={{ ...S.field, flex: "0 0 auto" }}>
+          <div style={{ ...S.field, flex: "0 0 auto", display: alleenProeven ? "none" : undefined }}>
             <span style={S.fieldLabel}>Hoeveel flessen</span>
             <QtyStepper value={aantal} onChange={(v) => setAantal(Math.min(maxAantal, Math.max(1, parseInt(v) || 1)))} big />
           </div>
@@ -2631,7 +2739,7 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
             </label>
           )}
         </div>
-        <div style={{ ...S.mapCaption, marginTop: -4 }}>
+        <div style={{ ...S.mapCaption, marginTop: -4, display: alleenProeven ? "none" : undefined }}>
           {nieuw
             ? (waarde > 0 ? `Samen ${eur(waarde * aantal)} · telt mee in wat je gedronken hebt` : "Telt mee in wat je gedronken hebt")
             : `Er blijven er ${Math.max(0, maxAantal - aantal)} over${waarde > 0 ? ` · samen ${eur(waarde * aantal)}` : ""}${!gedronken ? " · telt niet mee in wat je gedronken hebt" : ""}`}
@@ -2677,11 +2785,29 @@ function DrinkModal({ b, nieuw, onBevestig, onClose }) {
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
         <button style={S.btnPrimary}
           disabled={nieuw && !wijn.producer && !wijn.name}
-          onClick={() => onBevestig({ reden: nieuw ? "gedronken" : reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw })}>
-          <Check size={15} /> {aantal} fles{aantal > 1 ? "sen" : ""} {nieuw ? "in het logboek" : redenInfo.werkwoord}
+          onClick={() => onBevestig({ reden: nieuw ? "gedronken" : reden, aantal, datum, herproef, opbrengst, antw, wijn, kostte, nieuw, alleenProeven })}>
+          <Check size={15} /> {alleenProeven
+            ? "Proefnotitie bewaren"
+            : `${aantal} fles${aantal > 1 ? "sen" : ""} ${nieuw ? "in het logboek" : redenInfo.werkwoord}`}
         </button>
       </div>
     </Overlay>
+  );
+}
+
+// Staat BEWUST op modulehoogte. Maak hier nooit opnieuw een component binnen een
+// andere component van: React gooit het invoerveld dan bij elke toetsaanslag weg
+// en je kan maar één letter tegelijk typen.
+function ZoekRij({ waarde, bezig, onWijzig, onZoek }) {
+  return (
+    <div style={S.searchRow}>
+      <input style={{ ...S.input, flex: 1 }} placeholder="Niet juist? Zoek op naam, bv. Passopisciaro Contrada G 2015"
+        value={waarde} onChange={(e) => onWijzig(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") onZoek(); }} />
+      <button style={S.btnGhost} onClick={onZoek} disabled={bezig}>
+        {bezig ? <Loader2 className="spin" size={15} /> : <Search size={15} />} Zoek
+      </button>
+    </div>
   );
 }
 
@@ -3004,7 +3130,7 @@ function RestoreModal({ onRestore, onClose }) {
 }
 
 // ---------- detail card ----------
-function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onGedronken }) {
+function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onGedronken, onProeven }) {
   const sc = (px) => Math.round(px * scale);
   const st = drinkStatus(b);
   const ev = effVal(b);
@@ -3144,6 +3270,11 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
           <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Mijn proefnotities</div>
           <DirectVeld waarde={b.tasteNotes} onKlaar={(v) => onPatch && onPatch({ tasteNotes: v })}
             meerregelig placeholder="Kleur, neus, smaak, evolutie… (wordt vanzelf bewaard)" sc={sc} />
+          {onProeven && (
+            <button style={{ ...S.btnGhost, marginTop: 8, width: "100%", justifyContent: "center" }} onClick={onProeven}>
+              <Check size={15} /> Proeven met het draaiboek
+            </button>
+          )}
         </div>
         {b.notes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Notities</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p></div>}
 
@@ -3359,7 +3490,7 @@ const S = {
   brand: { display: "flex", alignItems: "center", gap: 11 },
   brandName: { fontFamily: "'Spectral',serif", fontSize: 27, fontWeight: 600, letterSpacing: 0.4, color: "var(--ink)" },
   savedTag: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--green)", background: "rgba(127,163,75,.12)", border: "1px solid rgba(127,163,75,.3)", padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap" },
-  menuBackdrop: { position: "fixed", inset: 0, zIndex: 40 },
+  menuBackdrop: { position: "fixed", inset: 0, zIndex: 40, cursor: "pointer" },
   menu: { position: "absolute", right: 0, top: 44, zIndex: 41, background: "var(--bg2)", border: "1px solid var(--line2)", borderRadius: 12, padding: 6, minWidth: 210, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", gap: 2 },
   menuItem: { display: "flex", alignItems: "center", gap: 9, background: "transparent", border: "none", color: "var(--ink)", padding: "10px 12px", borderRadius: 8, fontSize: 13.5, cursor: "pointer", textAlign: "left", width: "100%" },
   menuSep: { height: 1, background: "var(--line)", margin: "4px 6px" },
@@ -3410,8 +3541,8 @@ const S = {
   btnGhost: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer" },
   btnLink: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "var(--gold)", fontSize: 13, cursor: "pointer" },
 
-  overlay: { position: "fixed", inset: 0, background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
-  modal: { width: "100%", background: "linear-gradient(180deg, #201B17, #1A1613)", border: "1px solid var(--line2)", borderRadius: 16, padding: 22, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 30px 80px rgba(0,0,0,.6)" },
+  overlay: { cursor: "pointer", position: "fixed", inset: 0, background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { cursor: "auto", width: "100%", background: "linear-gradient(180deg, #201B17, #1A1613)", border: "1px solid var(--line2)", borderRadius: 16, padding: 22, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 30px 80px rgba(0,0,0,.6)" },
   modalFull: {
     maxWidth: 940, height: "calc(100vh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom))",
     maxHeight: "none", overflow: "hidden", display: "flex", flexDirection: "column",

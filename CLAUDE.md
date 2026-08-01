@@ -41,6 +41,18 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   jaargang, (2) Vivino-marktprijs van naburige jaargangen ("ter indicatie"),
   (3) een bedrag dat het model LETTERLIJK uit de zoeksnippets haalt, mét bron
   (`priceSource`; zonder bron telt het niet), (4) niets → leeg.
+- IS DIT WEL DEZELFDE WIJN? Dat is de belangrijkste vraag van de hele app.
+  `vivinoKeuze()` neemt niet "alles boven een drempel", maar de groep aanbiedingen
+  met de MINSTE vreemde woorden (`vreemdeWoorden()`), en enkel als mijn eigen naam
+  erin zit (`naamKlopt()`). Zo wint "Chambertin Grand Cru" van "Chambertin Clos de
+  Bèze Grand Cru", terwijl "Case Basse Sangiovese Toscana" gewoon blijft staan.
+  Prijs, etiketfoto, streek én Vivino-score komen ALTIJD uit diezelfde keuze —
+  nooit uit verschillende aanbiedingen.
+- Bij een winkelresultaat moet de TITEL vrij zijn van vreemde woorden. Anders
+  belandde de prijs van een Gevrey-Chambertin (€422) op een Chambertin Grand Cru.
+- `ALGEMEEN` bevat woorden die niets over de identiteit zeggen (grand, cru,
+  classico, domaine, château…). Vul die lijst aan als er valse verschillen
+  opduiken; verwijder er nooit iets uit zonder de Chambertin-test opnieuw te doen.
 - `/api/search` haalt naast de DuckDuckGo-snippets ook Vivino-aanbiedingen op
   (EUR, markt BE, per jaargang); `marketPrice()` in `app.jsx` kiest de exacte
   jaargang, anders naburige jaargangen, en negeert andere flesformaten.
@@ -67,6 +79,20 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - DuckDuckGo beantwoordt GET-verzoeken vanaf een server met een lege pagina
   (HTTP 202). `/api/search` moet dus met POST zoeken. Elke link zit verpakt in een
   redirect (`/l/?uddg=…`); `realUrl()` pakt die uit tot de echte bron-URL.
+
+## Etiketten lezen
+- Een rechtsvorm is GEEN producentnaam ("Azienda Agricola", "Domaine", "Tenuta"…)
+  en een jaartal is GEEN wijnnaam. De prompt zegt dat, en `schoonEtiket()` haalt
+  eruit wat er toch doorglipt. Die functie loopt over ALLE etiketlezingen, zowel
+  van een foto als van het zoeken op naam.
+
+## Bediening
+- Naast een venster of naast het menu tikken sluit het. Op iOS bereikt een tik
+  alleen betrouwbaar iets dat er klikbaar uitziet, dus luisteren `Overlay` en de
+  menu-achtergrond op pointerdown ÉN op click, met `cursor: pointer` erop.
+- Maak NOOIT een component binnen een andere component (`const Iets = () => …` in
+  een render). React gooit het invoerveld dan bij elke toetsaanslag weg en je kan
+  maar één letter tegelijk typen. `ZoekRij` staat daarom op modulehoogte.
 
 ## Kaart
 - De knop "Kaart" in de kop toont alle flessen die een `lat`/`lng` hebben op een
