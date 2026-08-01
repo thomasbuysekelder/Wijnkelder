@@ -420,36 +420,68 @@ async function geocodeEen(q) {
   if (wachten > 0) await slaap(wachten);
   laatsteGeo = Date.now();
   try {
-    const r = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(sleutel), {
+    const r = await fetch("https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&q=" + encodeURIComponent(sleutel), {
       headers: { "user-agent": "kelder-app/1.0 (persoonlijke wijnkelder)", accept: "application/json" },
     });
     if (!r.ok) return null;
     const j = await r.json();
     const hit = Array.isArray(j) ? j[0] : null;
     const uit = hit && hit.lat && hit.lon
-      ? { lat: parseFloat(hit.lat), lng: parseFloat(hit.lon), naam: strip(String(hit.display_name || "")).slice(0, 120) }
+      ? {
+          lat: parseFloat(hit.lat), lng: parseFloat(hit.lon),
+          // de eerste drie delen volstaan: "Ch. Haut-Brion, Avenue Jean Jaures, Pessac"
+          naam: strip(String(hit.display_name || "")).split(",").slice(0, 3).join(",").trim().slice(0, 120),
+          land: String((hit.address && hit.address.country_code) || "").toLowerCase(),
+        }
       : null;
     geoCache.set(sleutel, uit);
     return uit;
   } catch { return null; }
 }
 
-// Probeer de varianten op volgorde. Levert niets iets op, dan pas de tweede
-// omschrijving (bv. het dorp dat bij de fles staat), en als allerlaatste het land:
-// een ruwe plek is nog altijd beter dan geen plek, en de naam die we teruggeven
-// zegt eerlijk waar de speld staat.
-async function geocode(q, reserve) {
-  for (const v of geoVarianten(q)) {
+// Hoeveel kilometer liggen twee punten uit elkaar? Nodig om een te precieze
+// treffer te kunnen wantrouwen: "Chambertin" bestaat ook als gehucht in de Indre,
+// 300 km van Bourgogne, en "Contrada Guardiola" ligt ook in Puglia.
+function afstandKm(a, b) {
+  const R = 6371, rad = (x) => (x * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+async function eersteHit(vragen) {
+  for (const v of vragen) {
     const hit = await geocodeEen(v);
     if (hit) return hit;
   }
-  if (reserve) {
-    for (const v of geoVarianten(reserve)) {
-      const hit = await geocodeEen(v);
-      if (hit) return hit;
-    }
+  return null;
+}
+
+// Zo precies mogelijk, maar nooit ten koste van de juistheid:
+// 1) een ANKER op streekniveau (de appellatie), dat is traag maar betrouwbaar;
+// 2) daarna preciezere kandidaten: het domein zelf, en de omschrijving bij de fles;
+// 3) een preciezere treffer wordt enkel aanvaard als ze bij het anker in de buurt
+//    ligt (of, zonder anker, minstens in het juiste land);
+// 4) vindt niets iets, dan het land. Een ruwe plek is beter dan geen plek.
+async function geocode(info) {
+  const g = typeof info === "string" ? { streek: info } : (info || {});
+  const streek = String(g.streek || "").trim();
+  const land = streek.split(",").map((t) => t.trim()).filter(Boolean).pop() || "";
+  const anker = streek ? await eersteHit(geoVarianten(streek)) : null;
+
+  const kandidaten = [];
+  if (g.producent) kandidaten.push([String(g.producent).trim(), land].filter(Boolean).join(", "));
+  if (g.plek) kandidaten.push(...geoVarianten(String(g.plek)));
+
+  for (const k of kandidaten) {
+    const hit = await geocodeEen(k);
+    if (!hit) continue;
+    if (anker) { if (afstandKm(hit, anker) <= 100) return hit; continue; }
+    // geen anker: dan minstens nagaan of we in het juiste land zitten
+    const landHit = land ? await geocodeEen(land) : null;
+    if (!landHit || !landHit.land || !hit.land || landHit.land === hit.land) return hit;
   }
-  const land = String(q || "").split(",").map((t) => t.trim()).filter(Boolean).pop();
+  if (anker) return anker;
   return land ? await geocodeEen(land) : null;
 }
 
@@ -460,8 +492,13 @@ export default async function handler(req, res) {
   const wine = body.wine && typeof body.wine === "object" ? body.wine : null;
   const wiki = String(body.wiki || "").slice(0, 120);
   const pages = Array.isArray(body.pages) ? body.pages.slice(0, 6).map(String) : null;
-  const geo = String(body.geo || "").slice(0, 160);
-  if (geo) { res.status(200).json({ results: [], offers: [], wiki: null, geo: await geocode(geo, body.geoReserve), sources: {} }); return; }
+  // geo mag een tekst zijn (enkel de streek) of een blokje met streek, producent
+  // en de omschrijving bij de fles; dat laatste laat een veel preciezere speld toe
+  const kort = (x) => String(x || "").slice(0, 160);
+  const geo = body.geo && typeof body.geo === "object"
+    ? { streek: kort(body.geo.streek), producent: kort(body.geo.producent), plek: kort(body.geo.plek) }
+    : kort(body.geo);
+  if (geo && (typeof geo === "string" ? geo : geo.streek || geo.producent || geo.plek)) { res.status(200).json({ results: [], offers: [], wiki: null, geo: await geocode(geo), sources: {} }); return; }
   if (!q && !wine && !wiki && !pages) { res.status(400).json({ error: "query, wine, wiki of pages ontbreekt" }); return; }
 
   // aparte modus: enkel winkelpagina's openen en hun prijs uitlezen

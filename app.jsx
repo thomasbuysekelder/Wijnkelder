@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v57";
+const APP_VERSION = "kelder-v58";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -383,12 +383,12 @@ const SEARCH_URL = "/api/search";
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
 // De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
 // verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
-async function fetchSearch({ query, wine, wiki, pages, term, geo, geoReserve, prefix = "", max = 2600 }) {
+async function fetchSearch({ query, wine, wiki, pages, term, geo, prefix = "", max = 2600 }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, wine, wiki, pages, term, geo, geoReserve }),
+      body: JSON.stringify({ query, wine, wiki, pages, term, geo }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
@@ -898,11 +898,20 @@ async function lookupWineFull(b) {
   // Coördinaten uit een echte geocoder in plaats van uit het model: zo krijgt elke
   // jaargang van dezelfde wijn hetzelfde punt, en klopt het ook nog.
   const plek = [res.region || b.region, res.country || b.country].filter(Boolean).join(", ");
-  // Een appellatie is vaak geen plaats op de kaart. Lukt de streek niet, dan mag de
-  // omschrijving bij de fles ("Passopisciaro, Etna, Sicilië") het nog proberen, en
-  // pas daarna het land. De naam die we tonen komt van de geocoder zelf, zodat het
-  // opschrift bij de speld ook echt zegt waar ze staat.
-  const g = plek ? (await fetchSearch({ geo: plek, geoReserve: res.placeName || b.placeName || "" })).geo : null;
+  // Zo precies mogelijk: het domein zelf staat vaak op de kaart ("Château
+  // Haut-Brion" is er een echte wijnmakerij). /api/search zoekt eerst een anker op
+  // streekniveau en aanvaardt een preciezere speld enkel als die daar in de buurt
+  // ligt — anders belandt een "Chambertin" in een gehucht 300 km verderop. De naam
+  // die we tonen komt van de kaart zelf, zodat het opschrift klopt met de speld.
+  const g = plek || b.producer
+    ? (await fetchSearch({
+        geo: {
+          streek: plek,
+          producent: res.producer || b.producer || "",
+          plek: res.placeName || b.placeName || "",
+        },
+      })).geo
+    : null;
   res.lat = g ? g.lat : "";
   res.lng = g ? g.lng : "";
   if (g) res.placeName = g.naam || res.placeName || plek;

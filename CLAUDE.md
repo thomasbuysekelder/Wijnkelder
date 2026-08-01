@@ -145,9 +145,17 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   "Gevrey-Chambertin 1er Cru" vinden niets, "Léognan" en "Gevrey-Chambertin" wel.
   `geoVarianten()` maakt de vraag stap voor stap eenvoudiger (haakjes weg, "grand
   cru" weg, samengestelde namen splitsen, losse delen van een omschrijving).
-- Volgorde: eerst de streek, dan de omschrijving bij de fles (`geoReserve`, bv.
-  "Passopisciaro, Etna, Sicilië" → het echte dorp op de Etna), en pas als laatste
-  het land. Een ruwe plek is beter dan geen plek.
+- Zo PRECIES mogelijk, maar nooit ten koste van de juistheid. `geocode()` zoekt
+  eerst een ANKER op streekniveau, en probeert daarna preciezere kandidaten: het
+  domein zelf ("Château Haut-Brion" is een echte wijnmakerij in OSM) en de
+  omschrijving bij de fles. Een preciezere treffer wordt alleen aanvaard als ze
+  BINNEN 100 KM van het anker ligt; zonder anker moet minstens het land kloppen.
+  Vindt niets iets, dan het land — een ruwe plek is beter dan geen plek.
+- Die afstandscontrole is geen luxe: "Chambertin" bestaat als gehucht in de Indre,
+  300 km van Bourgogne, en "Contrada Guardiola" ligt ook in Puglia. Zonder anker
+  belandt de speld daar. Verwijder `afstandKm()` dus nooit.
+- `geo` in het verzoek mag een tekst zijn (enkel de streek) of een blokje met
+  `streek`, `producent` en `plek`.
 - De naam bij de speld komt van de GEOCODER zelf, niet van het model: zo zegt het
   opschrift ook echt waar de speld staat.
 - Het bewerkvenster bevat GEEN proefnotities en geen sommelier: die horen op de
