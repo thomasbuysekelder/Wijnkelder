@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v34";
+const APP_VERSION = "kelder-v35";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -777,10 +777,11 @@ function applyMarketPrice(res, mp, b, items, rates) {
   if (mp && mp.n > 1) {
     const waar = mp.bronnen.join(" en ");
     res.retailPrice = mp.price;
-    res.priceNote = mp.exact
+    res.priceNote = (mp.exact
       ? `mediaan van ${mp.n} winkelprijzen voor jaargang ${b.vintage} (${waar})`
-      : `mediaan van ${mp.n} winkelprijzen, jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")} — ter indicatie`;
-    res.priceNote += btwNoot;
+      : mp.years.length
+        ? `mediaan van ${mp.n} winkelprijzen, jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")} — ter indicatie`
+        : `mediaan van ${mp.n} winkelprijzen (${waar}), jaargang niet vermeld — ter indicatie`) + btwNoot;
     res.priceUrl = mp.url || "";
   } else if (mp && mp.exact) {
     res.retailPrice = mp.price;
@@ -788,7 +789,9 @@ function applyMarketPrice(res, mp, b, items, rates) {
     res.priceUrl = mp.url || "";
   } else if (mp) {
     res.retailPrice = mp.price;
-    res.priceNote = `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie` + btwNoot;
+    res.priceNote = (mp.years.length
+      ? `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie`
+      : `winkelprijs uit een webwinkel, jaargang niet vermeld — ter indicatie`) + btwNoot;
     res.priceUrl = mp.url || "";
   } else if (found > 0 && src) {
     // Ook deze route moet in euro én inclusief btw eindigen, anders vervuilt ze de
