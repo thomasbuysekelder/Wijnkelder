@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v40";
+const APP_VERSION = "kelder-v41";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1208,7 +1208,15 @@ export default function App() {
     setBottles((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
     setDetail((d) => (d && d.id === id ? { ...d, ...patch } : d));
   };
-  const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2600); };
+  // De timer van een vorige melding moet afgebroken worden, anders wiste die de
+  // voortgangsmelding van een lopende opzoeking na 2,6 seconden.
+  const toastTimer = useRef(null);
+  const setMelding = (m) => { clearTimeout(toastTimer.current); setToast(m); };
+  const flash = (m) => {
+    clearTimeout(toastTimer.current);
+    setToast(m);
+    toastTimer.current = setTimeout(() => setToast(""), 2600);
+  };
 
   const countries = useMemo(
     () => [...new Set(bottles.map((b) => b.country).filter(Boolean))].sort(), [bottles]);
@@ -1336,7 +1344,7 @@ export default function App() {
   const bulkLookup = async (lijst) => {
     for (let i = 0; i < lijst.length; i++) {
       const b = lijst[i];
-      setToast(`Info opzoeken ${i + 1}/${lijst.length} — jaargang ${b.vintage}…`);
+      setMelding(`Info opzoeken ${i + 1}/${lijst.length} — jaargang ${b.vintage}…`);
       try {
         const r = await lookupWineFull(b);
         patchBottle(b.id, enrichPatch(b, r, { keepFilled: true }));
@@ -2558,10 +2566,13 @@ function DirectVeld({ waarde, onKlaar, meerregelig, getal, placeholder, sc }) {
     const nieuw = String(waarde ?? "");
     if (nieuw !== laatste.current) { laatste.current = nieuw; setTekst(nieuw); }
   }, [waarde]);
+  // via refs, zodat het opruimen bij het sluiten nog met de actuele waarden werkt
+  const nu = useRef({ tekst: String(waarde ?? ""), onKlaar });
+  nu.current = { tekst, onKlaar };
   const bewaar = (v) => {
     if (v === laatste.current) return;
     laatste.current = v;
-    onKlaar && onKlaar(v);
+    nu.current.onKlaar && nu.current.onKlaar(v);
     setBewaard(true);
     setTimeout(() => setBewaard(false), 1600);
   };
@@ -2570,7 +2581,9 @@ function DirectVeld({ waarde, onKlaar, meerregelig, getal, placeholder, sc }) {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => bewaar(v), 900);   // even stoppen met typen = bewaren
   };
-  useEffect(() => () => clearTimeout(timer.current), []);
+  // Sluit je de kaart terwijl er nog een wijziging openstaat, dan moet die alsnog
+  // bewaard worden. Enkel de timer opruimen liet je laatste zin verloren gaan.
+  useEffect(() => () => { clearTimeout(timer.current); bewaar(nu.current.tekst); }, []);
   const stijl = { ...S.input, fontSize: sc(16), padding: getal ? "6px 8px" : "10px 12px" };
   return (
     <div style={{ position: "relative" }}>
