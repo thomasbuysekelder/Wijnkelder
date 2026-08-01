@@ -132,8 +132,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - Past er niets, dan laat `relaxCriteria()` de criteria één voor één vallen en
   wordt de lijst expliciet als "voldoet NIET aan alle criteria" meegestuurd; het
   model moet dan zeggen dat er niets past en per suggestie zeggen wát er niet klopt.
-- Begrensd op 30.000 tekens: eerst vallen de proefnotities weg, daarna de laatste
-  wijnen (dat wordt in het antwoord gemeld).
+- Begrensd op 30.000 tekens. `somRuimte()` zet eerst de kale regels van ALLE
+  kandidaten vast en verdeelt wat overblijft eerlijk over de flessen. Krimpt die
+  ruimte, dan sneuvelt eerst de beschrijving, dan de recensie, dan mijn losse
+  notitie. MIJN EIGEN PROEFNOTITIE verdwijnt als ALLERLAATSTE — die staat nergens
+  anders. Pas als zelfs de kale regels niet meer passen, vallen er wijnen af.
+  Wat er gesnoeid werd, staat in de prompt zodat de sommelier het kan melden.
 - Een vervolgvraag stuurt de laatste twee beurten beknopt mee (antwoord afgekapt
   op 600 tekens).
 

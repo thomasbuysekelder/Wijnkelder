@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v44";
+const APP_VERSION = "kelder-v45";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1009,7 +1009,7 @@ function relaxCriteria(bottles, c) {
   return { list: [], relaxed: null };
 }
 
-function cellarLine(b, withNotes) {
+function cellarLine(b, n) {
   const st = drinkStatus(b);
   const window = [b.drinkFrom, b.drinkTo].filter(Boolean).join("-");
   const v = effVal(b).v;
@@ -1032,19 +1032,47 @@ function cellarLine(b, withNotes) {
   // De basisregel wordt begrensd, de teksten krijgen elk hun eigen ruimte. Zo kan
   // een lange wijnnaam nooit de eigen proefnotitie van de gebruiker wegduwen.
   let line = parts.filter(Boolean).join(" | ").slice(0, 320);
-  if (withNotes && b.tasteNotes) line += ` | MIJN EIGEN PROEFNOTITIE: "${kort(b.tasteNotes, 600)}"`;
-  if (withNotes && b.notes) line += ` | mijn notitie: ${kort(b.notes, 200)}`;
-  if (withNotes && b.reviews) line += ` | recensies: ${kort(b.reviews, 300)}`;
-  if (withNotes && b.description) line += ` | over de wijn: ${kort(b.description, 250)}`;
+  if (n.eigen && b.tasteNotes) line += ` | MIJN EIGEN PROEFNOTITIE: "${kort(b.tasteNotes, n.eigen)}"`;
+  if (n.notitie && b.notes) line += ` | mijn notitie: ${kort(b.notes, n.notitie)}`;
+  if (n.recensie && b.reviews) line += ` | recensies: ${kort(b.reviews, n.recensie)}`;
+  if (n.over && b.description) line += ` | over de wijn: ${kort(b.description, n.over)}`;
   return line;
 }
 // bouwt de lijst op; wordt ze te groot, dan vallen eerst de proefnotities
 // weg en pas daarna de laatste wijnen (dat wordt dan gemeld in het antwoord)
+// Hoeveel plaats de teksten per fles maximaal krijgen als alles past.
+const SOMM_RUIM = { eigen: 600, notitie: 200, recensie: 300, over: 250 };
+const SOMM_KAAL = { eigen: 0, notitie: 0, recensie: 0, over: 0 };
+
+// De kale regels moeten er sowieso in; wat overblijft verdelen we eerlijk over de
+// flessen. Krimpt de ruimte, dan sneuvelt eerst de beschrijving, dan de recensie,
+// dan mijn losse notitie. De eigen proefnotitie verdwijnt als allerlaatste: die is
+// het waardevolst en staat nergens anders.
+function somRuimte(bottles) {
+  if (!bottles.length) return SOMM_KAAL;
+  const kaal = bottles.map((b, i) => `${i + 1}. ${cellarLine(b, SOMM_KAAL)}`).join("\n").length;
+  // elk stukje tekst sleept ook een etiket mee (' | MIJN EIGEN PROEFNOTITIE: "…"'),
+  // dus houden we daar per fles wat ruimte voor vrij
+  const per = Math.floor(Math.max(0, SOMM_MAX_CHARS - kaal) / bottles.length) - 100;
+  // onder de 60 tekens is een notitie niet meer dan een halve zin: dan liever niets
+  if (per < 60) return SOMM_KAAL;
+  return {
+    eigen: Math.min(SOMM_RUIM.eigen, per),
+    notitie: Math.min(SOMM_RUIM.notitie, Math.max(0, per - SOMM_RUIM.eigen)),
+    recensie: Math.min(SOMM_RUIM.recensie, Math.max(0, per - SOMM_RUIM.eigen - SOMM_RUIM.notitie)),
+    over: Math.min(SOMM_RUIM.over, Math.max(0, per - SOMM_RUIM.eigen - SOMM_RUIM.notitie - SOMM_RUIM.recensie)),
+  };
+}
+
 function cellarContext(bottles) {
-  const build = (withNotes) => bottles.map((b, i) => `${i + 1}. ${cellarLine(b, withNotes)}`);
-  let lines = build(true);
-  let notesDropped = false;
-  if (lines.join("\n").length > SOMM_MAX_CHARS) { lines = build(false); notesDropped = true; }
+  const n = somRuimte(bottles);
+  const lines = bottles.map((b, i) => `${i + 1}. ${cellarLine(b, n)}`);
+  const notesDropped =
+    n.eigen >= SOMM_RUIM.eigen && n.notitie >= SOMM_RUIM.notitie && n.recensie >= SOMM_RUIM.recensie && n.over >= SOMM_RUIM.over
+      ? ""
+      : n.eigen > 0
+        ? "de notities zijn ingekort om plaats te sparen"
+        : "de notities zijn weggelaten om plaats te sparen";
   const kept = [];
   let len = 0;
   for (const l of lines) {
@@ -1132,7 +1160,7 @@ async function askSommelier({ bottles, question, history }) {
         (labels.length ? `Harde criteria uit mijn vraag: ${labels.join(", ")}.\n\n` : "") +
         `${kop}.\nFormaat per regel: ${SOMM_LEGENDE}\n${text || "(geen enkele fles)"}\n` +
         (cut ? `\n(${cut} kandidaten zijn niet meegestuurd omdat de lijst te lang is; zeg dat erbij.)\n` : "") +
-        (notesDropped ? "(proefnotities zijn weggelaten om plaats te sparen)\n" : "") +
+        (notesDropped ? `(${notesDropped}; de lijst was te lang.)\n` : "") +
         (noPrice ? `(${noPrice} wijnen zijn weggelaten omdat hun prijs niet gekend is; vermeld dat kort.)\n` : "") +
         drinkSamenvatting(bottles) +
         (hist ? `\n${hist}\n` : "") +
