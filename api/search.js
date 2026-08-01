@@ -118,6 +118,9 @@ async function vivino(wine) {
         producer: (w.winery && w.winery.name) || "",
         name: w.name || "",
         vintage: v.year ?? "",
+        // herkomst uit Vivino zelf: betrouwbaarder dan een gok op basis van de naam
+        region: (w.region && w.region.name) || "",
+        country: (w.region && w.region.country && (w.region.country.name || w.region.country.code)) || "",
         url: vivinoUrl(w, v.year),
         price: typeof pr.amount === "number" ? Math.round(pr.amount * 100) / 100 : null,
         currency: (pr.currency && pr.currency.code) || "",

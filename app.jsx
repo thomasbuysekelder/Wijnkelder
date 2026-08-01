@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v16";
+const APP_VERSION = "kelder-v17";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -302,10 +302,72 @@ const median = (arr) => {
   const s = [...arr].sort((a, b) => a - b), m = Math.floor(s.length / 2);
   return Math.round((s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) * 100) / 100;
 };
+// ---------- prijzen uit de zoekresultaten zelf ----------
+// Tweede prijsbron naast Vivino. De bedragen worden hier met een patroon uit de
+// tekst gehaald, niet door het model bedacht, en elk bedrag houdt zijn bron-URL.
+// "1.234,56" / "1,234.56" / "30,00" / "30.00" → 1234.56 / 30
+function parseAmount(s) {
+  let t = String(s).replace(/[^\d.,]/g, "");
+  if (!t) return 0;
+  const komma = t.lastIndexOf(","), punt = t.lastIndexOf(".");
+  const dec = Math.max(komma, punt);
+  if (dec >= 0 && t.length - dec - 1 <= 2 && t.length - dec - 1 >= 1) {
+    t = t.slice(0, dec).replace(/[.,]/g, "") + "." + t.slice(dec + 1);
+  } else t = t.replace(/[.,]/g, "");
+  const n = parseFloat(t);
+  return isNaN(n) ? 0 : n;
+}
+// tekst die verraadt dat het niet om één gewone fles van 75 cl gaat
+const NIET_FLES = /per\s*(2|3|4|6|12)\b|\b(6|12)\s*(x|st|flessen)|doos|kist|case\s*of|halve\s*fles|37[,.]?5\s*cl|375\s*ml|magnum|1[,.]5\s*l\b|\b3\s*l\b|50\s*cl|500\s*ml|per\s*liter|\/\s*l\b/i;
+const GELDBEDRAG = /(?:€|eur)\s*([0-9][0-9.,]{0,9})|([0-9][0-9.,]{2,9})\s*(?:€|eur\b)/gi;
+
+function snippetPrices(items, b) {
+  const want = keyTokens(wineTerm(b));
+  const out = [];
+  for (const it of items || []) {
+    const tekst = `${it.title || ""} ${it.snippet || ""}`;
+    // hoort dit resultaat wel bij deze wijn?
+    const hay = keyTokens(tekst);
+    if (!want.length || tokenRatio(want, hay) < 0.6) continue;
+    if (NIET_FLES.test(tekst)) continue;
+    const jaar = (tekst.match(/\b(19[5-9]\d|20[0-4]\d)\b/g) || []).map(Number);
+    GELDBEDRAG.lastIndex = 0;
+    let m;
+    while ((m = GELDBEDRAG.exec(tekst))) {
+      const p = parseAmount(m[1] || m[2]);
+      if (p >= 3 && p <= 50000) out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar });
+    }
+  }
+  return out;
+}
+
 // bron-URL van het aanbod dat het dichtst bij de gekozen prijs ligt
 const nearestUrl = (pool, price) =>
   (pool.map((o) => ({ u: o.url || "", d: Math.abs(num(o.price) - price) }))
     .filter((x) => x.u).sort((a, c) => a.d - c.d)[0] || {}).u || "";
+
+// Alle prijsbronnen samen: Vivino-aanbiedingen én bedragen uit de zoekresultaten.
+// Meerdere bronnen maken de prijs robuuster dan één bron, en met de mediaan weegt
+// één uitschieter (een verkeerde wijn, een doosprijs) niet door.
+function pickPrice(offers, snips, b) {
+  const uitVivino = (offers || [])
+    .filter((o) => num(o.price) > 0 && (!o.volumeMl || o.volumeMl === 750) && offerMatch(o, b) >= 0.55)
+    .map((o) => ({ price: num(o.price), url: o.url || "", years: [parseInt(o.vintage)].filter(Boolean), bron: "Vivino" }));
+  const uitWeb = (snips || []).map((s) => ({ ...s, bron: s.title || "zoekresultaat" }));
+  const alle = [...uitVivino, ...uitWeb];
+  if (!alle.length) return null;
+
+  const y = parseInt(b.vintage);
+  const exact = y ? alle.filter((p) => p.years.includes(y)) : [];
+  const pool = exact.length ? exact : alle;
+  const prijs = median(pool.map((p) => p.price));
+  const dichtst = [...pool].sort((a, c) => Math.abs(a.price - prijs) - Math.abs(c.price - prijs))[0];
+  const bronnen = [...new Set(pool.map((p) => (p.bron === "Vivino" ? "Vivino" : "winkels")))];
+  return {
+    price: prijs, n: pool.length, exact: exact.length > 0, url: dichtst ? dichtst.url : "",
+    years: [...new Set(pool.flatMap((p) => p.years))].sort(), bronnen,
+  };
+}
 
 // kies een marktprijs: eerst de exacte jaargang, anders naburige jaargangen van dezelfde wijn
 function marketPrice(offers, b) {
@@ -323,6 +385,14 @@ function marketPrice(offers, b) {
   const price = median(pool.map((o) => num(o.price)));
   return { price, basis: "nabij", n: pool.length, years, url: nearestUrl(pool, price) };
 }
+// Herkomst volgens Vivino (streek + land), van het best passende aanbod. Dit is
+// harde brondata en gaat dus vóór op wat het model uit de naam zou afleiden.
+function vivinoOrigin(offers, b) {
+  const beste = (offers || []).filter((o) => (o.region || o.country) && offerMatch(o, b) >= 0.55)
+    .sort((a, c) => offerMatch(c, b) - offerMatch(a, b))[0];
+  return beste ? { region: beste.region || "", country: beste.country || "" } : null;
+}
+
 // Vivino-score van dezelfde wijn: eerst deze jaargang, anders de jaargang met de
 // meeste beoordelingen (die wordt dan expliciet als 'andere jaargang' gemeld)
 function vivinoRating(offers, b) {
@@ -437,11 +507,16 @@ async function lookupWineFull(b) {
   "drinkTo": beste drinkjaar tot voor deze jaargang (getal),
   "score": kritiekscore 0-100 die in de zoekresultaten staat voor DEZE jaargang, anders null,
   "reviews": "2 à 3 zinnen samenvatting van wat proevers en recensenten over deze wijn schrijven, in het Nederlands, met de bronnaam erbij; gaat het over een andere jaargang, begin dan met 'Recensie van jaargang JAAR, ter indicatie:'; is er niets, schrijf dan exact 'Geen recensie gevonden.'",
+  "region": "streek/appellation VOLGENS DE ZOEKRESULTATEN; laat leeg als je het daar niet terugvindt",
+  "country": "land VOLGENS DE ZOEKRESULTATEN; laat leeg als je het daar niet terugvindt",
   "placeName": "plaats waar de wijn gemaakt wordt (domein, streek, land)",
   "lat": breedtegraad als getal,
   "lng": lengtegraad als getal
 }`;
-  const wijn = [b.producer, b.name, b.vintage, "-", b.region, b.country].filter(Boolean).join(" ");
+  // De streek NIET als vaststaand feit meegeven: komt ze uit een eerdere
+  // etiketlezing, dan is ze mogelijk fout en herhaalt het model die fout eindeloos.
+  const wijn = [b.producer, b.name, b.vintage].filter(Boolean).join(" ");
+  const vermoeden = [b.region, b.country].filter(Boolean).join(", ");
   const naam = [wineTerm(b), b.vintage].filter(Boolean).join(" ");
   // twee gratis zoekopdrachten: één voor prijs/algemeen, één gericht op recensies
   const zoek = () => Promise.all([
@@ -464,20 +539,23 @@ async function lookupWineFull(b) {
     }
   }
   const { text: ctx, items, offers } = main;
-  const mp = marketPrice(offers, b);
+  // prijzen uit ALLE resultaten (ook die van de recensiezoekopdracht: webshops
+  // duiken daar evengoed op) samen met de Vivino-aanbiedingen
+  const snips = snippetPrices([...(items || []), ...(rev.items || [])], b);
+  const mp = pickPrice(offers, snips, b);
   const vr = vivinoRating(offers, b);
   const lines = offerLines(offers, b);
-  const priceCtx = lines
-    ? `Echte winkelprijzen (75 cl, EUR, Belgische markt):\n${lines}\n` +
-      (mp ? (mp.basis === "exact"
-        ? `Prijs voor jaargang ${b.vintage}: € ${mp.price}. Die wordt automatisch gebruikt; laat retailPrice op null.\n`
-        : `Voor jaargang ${b.vintage} is er geen aanbod; naburige jaargangen (${mp.years.join(", ")}) liggen rond € ${mp.price}. Die wordt automatisch gebruikt; laat retailPrice op null.\n`) : "")
+  const priceCtx = mp
+    ? `Echte winkelprijzen (75 cl, EUR): ${mp.n} bedrag${mp.n > 1 ? "en" : ""} gevonden, mediaan € ${mp.price} (jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ") || "onbekend"}).\n` +
+      (lines ? `${lines}\n` : "") + "Die prijs wordt automatisch gebruikt; laat retailPrice op null.\n"
     : "Geen winkelprijzen gevonden. Vul retailPrice enkel in als er een concreet bedrag in de zoekresultaten hieronder staat, met de bron erbij; anders null.\n";
   const body = {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1400,
     system:
-      "Je bent een ervaren sommelier. Voor prijzen, scores en recensies gebruik je UITSLUITEND de meegeleverde zoekresultaten; je eigen kennis mag enkel de beschrijving, de druif, het drinkvenster en de locatie invullen. " +
+      "Je bent een ervaren sommelier. Voor prijzen, scores, recensies EN de herkomst (streek/land) gebruik je UITSLUITEND de meegeleverde zoekresultaten; je eigen kennis mag enkel de beschrijving, de druif en het drinkvenster invullen. " +
+      "De streek die de gebruiker meegeeft komt uit een etiketlezing en kan fout zijn: bevestigen de zoekresultaten ze niet, neem ze dan NIET over. " +
+      "Een Franstalige naam betekent niet dat de wijn uit Frankrijk komt — er wordt ook in België, Zwitserland en Canada Franstalig geëtiketteerd. Laat region en country leeg als de resultaten er niets over zeggen. " +
       "Prijs: nooit schatten. Staat er geen concreet bedrag in de zoekresultaten, dan is retailPrice null. Het gaat altijd om één fles van 75 cl. " +
       "Recensies: schrijf 2 à 3 zinnen over hoe deze wijn proeft en wat recensenten ervan vinden, ALLEEN op basis van de meegeleverde recensieresultaten, met de bronnaam erbij. " +
       "Verzin nooit een citaat, punt of bron. Vind je niets voor deze jaargang, dan mag je recensies van een ANDERE jaargang van dezelfde wijn samenvatten, " +
@@ -487,7 +565,9 @@ async function lookupWineFull(b) {
       "Begin met '{' en eindig met '}'. Antwoord UITSLUITEND met het volledige geldige JSON-object volgens het schema, zonder tekst errond of markdown.",
     messages: [{
       role: "user",
-      content: `Wijn en jaargang: ${wijn}\n\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\n` +
+      content: `Wijn en jaargang: ${wijn}\n` +
+        (vermoeden ? `Streek volgens de etiketlezing (ONBEVESTIGD, mogelijk fout): ${vermoeden}\n` : "") +
+        `\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\n` +
         `Recensies en proefnotities uit een aparte zoekopdracht:\n${rev.text || "(geen)"}\n\n` +
         `Geef exact dit JSON-object terug:\n${schema}`,
     }],
@@ -497,14 +577,18 @@ async function lookupWineFull(b) {
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
   const res = applyReviews(applyMarketPrice(parsed, mp, b, items), vr);
+  // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
+  const herkomst = vivinoOrigin(offers, b);
+  if (herkomst && herkomst.country) { res.region = herkomst.region || res.region; res.country = herkomst.country; }
   // Wordt er geen prijs gevonden terwijl een bron onbereikbaar was, zeg dat er
   // dan bij. Anders lijkt een geblokkeerde bron op "deze wijn bestaat nergens".
   if (res.retailPrice === "") {
+    const kapot = (v) => v === "onbereikbaar" || v === "fout";
     const stuk = [
-      main.sources.vivino === "onbereikbaar" || main.sources.vivino === "fout" ? "Vivino" : "",
-      main.sources.web === "onbereikbaar" || main.sources.web === "fout" ? "de webzoekopdracht" : "",
+      kapot(main.sources.vivino) ? "Vivino was niet bereikbaar" : main.sources.vivino === "leeg" ? "Vivino gaf niets terug" : "",
+      kapot(main.sources.web) ? "de webzoekopdracht was niet bereikbaar" : main.sources.web === "leeg" ? "de webzoekopdracht gaf niets terug" : "",
     ].filter(Boolean);
-    if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(" en ")} was niet bereikbaar`;
+    if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(", ")}`;
   }
   return res;
 }
@@ -519,13 +603,20 @@ function applyMarketPrice(res, mp, b, items) {
   const src = String(res.priceSource || "").trim();
   const idx = parseInt(res.priceSourceIndex);
   const hit = idx > 0 && Array.isArray(items) ? items[idx - 1] : null;
-  if (mp && mp.basis === "exact") {
+  if (mp && mp.n > 1) {
+    const waar = mp.bronnen.join(" en ");
     res.retailPrice = mp.price;
-    res.priceNote = `marktprijs jaargang ${b.vintage} (${mp.n} aanbieding${mp.n > 1 ? "en" : ""}, 75 cl)`;
+    res.priceNote = mp.exact
+      ? `mediaan van ${mp.n} winkelprijzen voor jaargang ${b.vintage} (${waar})`
+      : `mediaan van ${mp.n} winkelprijzen, jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")} — ter indicatie`;
+    res.priceUrl = mp.url || "";
+  } else if (mp && mp.exact) {
+    res.retailPrice = mp.price;
+    res.priceNote = `winkelprijs jaargang ${b.vintage} (${mp.bronnen.join(" en ")}, 75 cl)`;
     res.priceUrl = mp.url || "";
   } else if (mp) {
     res.retailPrice = mp.price;
-    res.priceNote = `marktprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie`;
+    res.priceNote = `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie`;
     res.priceUrl = mp.url || "";
   } else if (found > 0 && src) {
     const py = parseInt(res.priceVintage), y = parseInt(b.vintage);
@@ -585,6 +676,10 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
     : { retailValue: r.retailPrice, priceNote: r.priceNote || "", priceUrl: r.priceUrl || "" };
   return {
     grape: b.grape || r.grape || "",
+    // streek en land mogen door de opzoeking gecorrigeerd worden: een foute
+    // etiketlezing bleef anders eeuwig staan (en werd door elke opzoeking herhaald)
+    region: keep(b.region, r.region || b.region),
+    country: keep(b.country, r.country || b.country),
     description: r.description || b.description || "",
     reviews: r.reviews || b.reviews || "",
     placeName: r.placeName || b.placeName || "",
