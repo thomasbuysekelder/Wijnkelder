@@ -49,6 +49,79 @@ function parseLiteResults(html) {
   return out;
 }
 
+// Brave Search: primaire webbron. Sleutel staat in de omgeving, nooit in de code.
+// Geeft null bij een fout (dan valt de handler terug op DuckDuckGo) en [] als de
+// zoekopdracht wel lukte maar niets opleverde.
+const slaap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function brave(query, poging = 0) {
+  const key = process.env.BRAVE_API_KEY;
+  if (!key) return null;
+  const p = new URLSearchParams({ q: query, count: "6", country: "BE", search_lang: "nl", safesearch: "off" });
+  try {
+    const r = await fetch("https://api.search.brave.com/res/v1/web/search?" + p, {
+      headers: { accept: "application/json", "accept-encoding": "gzip", "x-subscription-token": key },
+    });
+    // gratis laag staat één bevraging per seconde toe; de app zoekt er twee tegelijk
+    if (r.status === 429 && poging === 0) { await slaap(1200); return brave(query, 1); }
+    if (!r.ok) return null;
+    const j = await r.json();
+    const res = ((j && j.web && j.web.results) || []).slice(0, 6).map((x) => ({
+      title: strip(x.title || "").slice(0, 120),
+      snippet: strip(x.description || "").slice(0, 300),
+      url: String(x.url || "").slice(0, 400),
+    })).filter((x) => x.title);
+    return res;
+  } catch { return null; }
+}
+
+// Wikipedia: gratis en zonder sleutel, voor achtergrond bij een domein of wijn.
+// Bewust NIET als recensiebron — een encyclopedie beoordeelt geen jaargangen.
+// Woorden die verraden dat het artikel echt over wijn gaat. Zonder deze controle
+// gaf "Soldera" op de Nederlandse Wikipedia "Lijst van trainers van AC Milan".
+const WIJNWOORD = /wijn|wine|winer|vineyard|wijngaard|vino|vigne|appellation|domaine|domein|ch[aâ]teau|druif|grape|bodega|cantina|wijnbouw|viticult/i;
+const wikiTokens = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w.length > 3);
+
+async function wikipedia(term) {
+  const t = String(term || "").trim();
+  if (!t) return null;
+  const wil = wikiTokens(t);
+  const kop = { "user-agent": "kelder-app/1.0 (persoonlijke wijnkelder)", accept: "application/json" };
+  for (const taal of ["nl", "en"]) {
+    try {
+      const zoek = new URLSearchParams({ action: "query", list: "search", srsearch: t, srlimit: "3", format: "json", origin: "*" });
+      const r1 = await fetch(`https://${taal}.wikipedia.org/w/api.php?` + zoek, { headers: kop });
+      if (!r1.ok) continue;
+      const j1 = await r1.json();
+      const treffers = (j1 && j1.query && j1.query.search) || [];
+      // enkel artikelen waarvan de titel bij de zoekterm hoort
+      const kandidaten = treffers.filter((h) => {
+        const titel = wikiTokens(h.title);
+        return wil.some((w) => titel.includes(w));
+      });
+      if (!kandidaten.length) continue;
+      const uit = new URLSearchParams({
+        action: "query", prop: "extracts", exintro: "1", explaintext: "1",
+        titles: kandidaten.map((k) => k.title).join("|"), format: "json", origin: "*",
+      });
+      const r2 = await fetch(`https://${taal}.wikipedia.org/w/api.php?` + uit, { headers: kop });
+      if (!r2.ok) continue;
+      const j2 = await r2.json();
+      const pages = Object.values((j2 && j2.query && j2.query.pages) || {});
+      for (const k of kandidaten) {
+        const pagina = pages.find((p) => p.title === k.title);
+        const extract = strip((pagina && pagina.extract) || "");
+        // moet echt over wijn gaan, anders is het toeval en misleidt het het model
+        if (extract.length > 80 && WIJNWOORD.test(extract)) {
+          return { title: k.title, extract: extract.slice(0, 600), taal, url: `https://${taal}.wikipedia.org/wiki/${encodeURIComponent(k.title)}` };
+        }
+      }
+    } catch { /* volgende taal */ }
+  }
+  return null;
+}
+
 async function ddg(query) {
   const attempts = [
     ["https://html.duckduckgo.com/html/", parseHtmlResults],
@@ -141,12 +214,23 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const q = String(body.query || "").slice(0, 200);
   const wine = body.wine && typeof body.wine === "object" ? body.wine : null;
-  if (!q && !wine) { res.status(400).json({ error: "query of wine ontbreekt" }); return; }
+  const wiki = String(body.wiki || "").slice(0, 120);
+  if (!q && !wine && !wiki) { res.status(400).json({ error: "query, wine of wiki ontbreekt" }); return; }
   try {
-    const [results, offers] = await Promise.all([
-      q ? ddg(q) : Promise.resolve([]),
+    // Brave eerst; ontbreekt de sleutel of faalt hij, dan DuckDuckGo als terugval.
+    const web = async () => {
+      if (!q) return { items: [], bron: "" };
+      const b = await brave(q);
+      if (b !== null) return { items: b, bron: "Brave" };
+      const d = await ddg(q);
+      return { items: d, bron: d === null ? "" : "DuckDuckGo" };
+    };
+    const [wr, offers, wikiInfo] = await Promise.all([
+      web(),
       wine ? vivino(wine) : Promise.resolve([]),
+      wiki ? wikipedia(wiki) : Promise.resolve(null),
     ]);
+    const results = wr.items;
     // sources maakt het verschil zichtbaar tussen "bron gaf niets terug" en
     // "bron was onbereikbaar"; anders lijkt een geblokkeerde bron op een wijn
     // waarover niets te vinden is.
@@ -154,9 +238,15 @@ export default async function handler(req, res) {
     res.status(200).json({
       results: results || [],
       offers: offers || [],
-      sources: { web: staat(results, !!q), vivino: staat(offers, !!wine) },
+      wiki: wikiInfo,
+      sources: {
+        web: staat(results, !!q),
+        webBron: wr.bron,                                   // welke bron het geworden is
+        vivino: staat(offers, !!wine),
+        wikipedia: !wiki ? "niet gevraagd" : wikiInfo ? "ok" : "leeg",
+      },
     });
   } catch {
-    res.status(200).json({ results: [], offers: [], sources: { web: "fout", vivino: "fout" } });
+    res.status(200).json({ results: [], offers: [], wiki: null, sources: { web: "fout", webBron: "", vivino: "fout", wikipedia: "fout" } });
   }
 }

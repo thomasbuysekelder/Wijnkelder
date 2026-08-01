@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v19";
+const APP_VERSION = "kelder-v20";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -311,22 +311,23 @@ const SEARCH_URL = "/api/search";
 // Faalt de prijsbron, dan blijven de snippets gewoon werken.
 // De resultaten worden genummerd meegegeven, zodat het model naar een bron kan
 // verwijzen met een nummer en wij daar zelf de echte URL bij zoeken.
-async function fetchSearch({ query, wine, prefix = "" }) {
+async function fetchSearch({ query, wine, wiki, prefix = "", max = 2600 }) {
   try {
     const res = await fetch(SEARCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, wine }),
+      body: JSON.stringify({ query, wine, wiki }),
     });
     const data = await res.json();
     const items = (data && data.results) || [];
-    const text = items.map((r, i) => `[${prefix}${i + 1}] ${r.title}: ${r.snippet}`).join("\n").slice(0, 2600);
+    const text = items.map((r, i) => `[${prefix}${i + 1}] ${r.title}: ${r.snippet}`).join("\n").slice(0, max);
     return {
       text, items,
       offers: Array.isArray(data && data.offers) ? data.offers : [],
+      wiki: (data && data.wiki) || null,
       sources: (data && data.sources) || {},
     };
-  } catch { return { text: "", items: [], offers: [], sources: { web: "fout", vivino: "fout" } }; }
+  } catch { return { text: "", items: [], offers: [], wiki: null, sources: { web: "fout", vivino: "fout" } }; }
 }
 async function fetchSnippets(query) { return (await fetchSearch({ query })).text; }
 
@@ -569,10 +570,14 @@ async function lookupWineFull(b) {
   const vermoeden = [b.region, b.country].filter(Boolean).join(", ");
   const naam = [wineTerm(b), b.vintage].filter(Boolean).join(" ");
   // twee gratis zoekopdrachten: één voor prijs/algemeen, één gericht op recensies
+  // De prijszoekopdracht krijgt ook de Wikipedia-opzoeking mee (gratis, geen sleutel)
+  // en is wat korter afgekapt, zodat het totaal richting het model gelijk blijft.
   const zoek = () => Promise.all([
     fetchSearch({
       query: `${naam} wijn prijs per fles`,
       wine: { term: naam, producer: b.producer, name: b.name, vintage: b.vintage },
+      wiki: String(b.producer || b.name || "").trim(),
+      max: 2000,
     }),
     fetchSearch({ query: `${naam} recensie review tasting notes`, prefix: "R" }),
   ]);
@@ -605,6 +610,7 @@ async function lookupWineFull(b) {
     system:
       "Je bent een ervaren sommelier. Voor prijzen, scores, recensies EN de herkomst (streek/land) gebruik je UITSLUITEND de meegeleverde zoekresultaten; je eigen kennis mag enkel de beschrijving, de druif en het drinkvenster invullen. " +
       "De streek die de gebruiker meegeeft komt uit een etiketlezing en kan fout zijn: bevestigen de zoekresultaten ze niet, neem ze dan NIET over. " +
+      "Staat er een Wikipedia-blok bij, gebruik dat voor de beschrijving en de herkomst (streek en land), maar NOOIT als recensie of score. " +
       "Een Franstalige naam betekent niet dat de wijn uit Frankrijk komt — er wordt ook in België, Zwitserland en Canada Franstalig geëtiketteerd. Laat region en country leeg als de resultaten er niets over zeggen. " +
       "Prijs: nooit schatten. Staat er geen concreet bedrag in de zoekresultaten, dan is retailPrice null. Het gaat altijd om één fles van 75 cl. " +
       "Recensies: schrijf 2 à 3 zinnen over hoe deze wijn proeft en wat recensenten ervan vinden, ALLEEN op basis van de meegeleverde recensieresultaten, met de bronnaam erbij. " +
@@ -617,7 +623,9 @@ async function lookupWineFull(b) {
       role: "user",
       content: `Wijn en jaargang: ${wijn}\n` +
         (vermoeden ? `Streek volgens de etiketlezing (ONBEVESTIGD, mogelijk fout): ${vermoeden}\n` : "") +
-        `\n${priceCtx}\nZoekresultaten:\n${ctx || "(geen)"}\n\n` +
+        `\n${priceCtx}\n` +
+        (main.wiki ? `Wikipedia — ${main.wiki.title} (achtergrond over domein/streek, GEEN recensie):\n${main.wiki.extract}\n\n` : "") +
+        `Zoekresultaten:\n${ctx || "(geen)"}\n\n` +
         `Recensies en proefnotities uit een aparte zoekopdracht:\n${rev.text || "(geen)"}\n\n` +
         `Geef exact dit JSON-object terug:\n${schema}`,
     }],
@@ -634,9 +642,10 @@ async function lookupWineFull(b) {
   // dan bij. Anders lijkt een geblokkeerde bron op "deze wijn bestaat nergens".
   if (res.retailPrice === "") {
     const kapot = (v) => v === "onbereikbaar" || v === "fout";
+    const web = main.sources.webBron || "de webzoekopdracht";
     const stuk = [
       kapot(main.sources.vivino) ? "Vivino was niet bereikbaar" : main.sources.vivino === "leeg" ? "Vivino gaf niets terug" : "",
-      kapot(main.sources.web) ? "de webzoekopdracht was niet bereikbaar" : main.sources.web === "leeg" ? "de webzoekopdracht gaf niets terug" : "",
+      kapot(main.sources.web) ? `${web} was niet bereikbaar` : main.sources.web === "leeg" ? `${web} gaf niets terug` : "",
     ].filter(Boolean);
     if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(", ")}`;
   }
