@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v15";
+const APP_VERSION = "kelder-v16";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -271,8 +271,12 @@ async function fetchSearch({ query, wine, prefix = "" }) {
     const data = await res.json();
     const items = (data && data.results) || [];
     const text = items.map((r, i) => `[${prefix}${i + 1}] ${r.title}: ${r.snippet}`).join("\n").slice(0, 2600);
-    return { text, items, offers: Array.isArray(data && data.offers) ? data.offers : [] };
-  } catch { return { text: "", items: [], offers: [] }; }
+    return {
+      text, items,
+      offers: Array.isArray(data && data.offers) ? data.offers : [],
+      sources: (data && data.sources) || {},
+    };
+  } catch { return { text: "", items: [], offers: [], sources: { web: "fout", vivino: "fout" } }; }
 }
 async function fetchSnippets(query) { return (await fetchSearch({ query })).text; }
 
@@ -348,6 +352,16 @@ function offerLines(offers, b) {
     .slice(0, 12)
     .map((o) => `- ${[o.producer, o.name].filter(Boolean).join(" ")} ${o.vintage}: € ${o.price}`)
     .join("\n");
+}
+
+// Zoekterm zonder dubbels: staat de producentnaam al in de wijnnaam ("Soldera" +
+// "Soldera Case Basse"), dan vervuilt die herhaling de zoekopdracht.
+function wineTerm(b) {
+  const kaal = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+  const naam = String(b.name || "").trim();
+  const inNaam = new Set(naam.split(/\s+/).map(kaal).filter(Boolean));
+  const prod = String(b.producer || "").trim().split(/\s+/).filter((w) => kaal(w) && !inNaam.has(kaal(w))).join(" ");
+  return [prod, naam].filter(Boolean).join(" ").trim() || String(b.producer || b.name || "").trim();
 }
 
 const WINE_SCHEMA = `{
@@ -428,15 +442,27 @@ async function lookupWineFull(b) {
   "lng": lengtegraad als getal
 }`;
   const wijn = [b.producer, b.name, b.vintage, "-", b.region, b.country].filter(Boolean).join(" ");
-  const naam = [b.producer, b.name, b.vintage].filter(Boolean).join(" ");
+  const naam = [wineTerm(b), b.vintage].filter(Boolean).join(" ");
   // twee gratis zoekopdrachten: één voor prijs/algemeen, één gericht op recensies
-  const [main, rev] = await Promise.all([
+  const zoek = () => Promise.all([
     fetchSearch({
       query: `${naam} wijn prijs per fles`,
-      wine: { producer: b.producer, name: b.name, vintage: b.vintage },
+      wine: { term: naam, producer: b.producer, name: b.name, vintage: b.vintage },
     }),
-    fetchSearch({ query: `${naam} recensie review tasting notes proefnotities`, prefix: "R" }),
+    fetchSearch({ query: `${naam} recensie review tasting notes`, prefix: "R" }),
   ]);
+  // DuckDuckGo knijpt bij drukte soms af en geeft dan een lege pagina terug. Komt
+  // ALLES leeg terug, dan is dat een mislukte opzoeking en géén bewijs dat er niets
+  // bestaat: één keer gratis opnieuw proberen, en anders eerlijk melden dat het
+  // misliep — zo wordt een fles niet onterecht als prijsloos weggeschreven.
+  let [main, rev] = await zoek();
+  const leeg = (s) => !s.items.length && !s.offers.length;
+  if (leeg(main) && leeg(rev)) {
+    [main, rev] = await zoek();
+    if (leeg(main) && leeg(rev)) {
+      throw new Error("De zoekbronnen gaven even niets terug. Probeer het zo meteen opnieuw.");
+    }
+  }
   const { text: ctx, items, offers } = main;
   const mp = marketPrice(offers, b);
   const vr = vivinoRating(offers, b);
@@ -470,7 +496,17 @@ async function lookupWineFull(b) {
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
-  return applyReviews(applyMarketPrice(parsed, mp, b, items), vr);
+  const res = applyReviews(applyMarketPrice(parsed, mp, b, items), vr);
+  // Wordt er geen prijs gevonden terwijl een bron onbereikbaar was, zeg dat er
+  // dan bij. Anders lijkt een geblokkeerde bron op "deze wijn bestaat nergens".
+  if (res.retailPrice === "") {
+    const stuk = [
+      main.sources.vivino === "onbereikbaar" || main.sources.vivino === "fout" ? "Vivino" : "",
+      main.sources.web === "onbereikbaar" || main.sources.web === "fout" ? "de webzoekopdracht" : "",
+    ].filter(Boolean);
+    if (stuk.length) res.priceNote = `geen prijs gevonden — ${stuk.join(" en ")} was niet bereikbaar`;
+  }
+  return res;
 }
 
 // Prijs: enkel echte bedragen. Volgorde: (1) marktprijs voor exact deze jaargang,
@@ -705,6 +741,50 @@ async function askSommelier({ bottles, question, history }) {
         (noPrice ? `(${noPrice} wijnen zijn weggelaten omdat hun prijs niet gekend is; vermeld dat kort.)\n` : "") +
         (hist ? `\n${hist}\n` : "") +
         `\nMijn vraag: ${question}`,
+    }],
+  };
+  const data = await callClaude(body);
+  const out = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n").trim();
+  if (!out) throw new Error("Geen antwoord gekregen.");
+  return out;
+}
+
+// ---------- vraag over één fles (op de detailkaart) ----------
+// Veel goedkoper dan een kelderbrede vraag: de context is één fles. Draait op
+// Haiku, met een gratis zoekopdracht als onderbouwing, en enkel als je zelf
+// op verzenden tikt — nooit automatisch bij het openen van een fles.
+async function askWineQuestion({ b, question, history }) {
+  const st = drinkStatus(b);
+  const fles = [
+    ["producent", b.producer], ["wijn", b.name], ["jaargang", b.vintage],
+    ["kleur", b.color], ["druif", b.grape],
+    ["streek", [b.region, b.country].filter(Boolean).join(", ")],
+    ["drinkvenster", [b.drinkFrom, b.drinkTo].filter(Boolean).join("-")],
+    ["status", st.label !== "—" ? st.label : ""],
+    ["beschrijving", b.description], ["recensies", b.reviews],
+    ["mijn proefnotities", b.tasteNotes], ["mijn notities", b.notes],
+  ].filter((r) => String(r[1] || "").trim())
+    .map((r) => `${r[0]}: ${String(r[1]).replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
+
+  const { text: ctx } = await fetchSearch({
+    query: `${[wineTerm(b), b.vintage].filter(Boolean).join(" ")} ${question}`.slice(0, 200),
+  });
+  const hist = (history || []).slice(-2)
+    .map((t) => `Eerdere vraag: ${t.q}\nJouw eerdere antwoord (beknopt): ${String(t.a).replace(/\s+/g, " ").slice(0, 500)}`)
+    .join("\n\n");
+  const body = {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 700,
+    system:
+      "Je bent een ervaren sommelier en beantwoordt een vraag over één bepaalde fles uit de kelder van de gebruiker. " +
+      "Steun op de meegeleverde zoekresultaten voor feiten (geschiedenis van het domein, stijl, jaargang, prijzen, scores) en noem de bron als je iets overneemt. " +
+      "Verzin nooit een feit, jaartal, score, prijs of citaat. Weet je iets niet of staat het niet in de resultaten, zeg dat dan gewoon; " +
+      "algemene kennis mag, maar zeg er dan bij dat je het niet kon nakijken. " +
+      "Antwoord in vlot, informeel Nederlands (Vlaams), in korte alinea's zonder markdown-opmaak, en hou het bij zo'n 150 woorden tenzij de vraag meer vraagt.",
+    messages: [{
+      role: "user",
+      content: `De fles waarover ik iets vraag:\n${fles}\n\nZoekresultaten:\n${ctx || "(geen)"}\n` +
+        (hist ? `\n${hist}\n` : "") + `\nMijn vraag: ${question}`,
     }],
   };
   const data = await callClaude(body);
@@ -1159,13 +1239,14 @@ function Row({ b, scale, onOpen, onDelete }) {
   const m = maturity(b);
   const dot = { rood: "#7B1E2B", wit: "#D9C97A", "rosé": "#E1A0A6", mousserend: "#E7D9A0", versterkt: "#8A4B24", oranje: "#C77D2E" }[b.color] || "#7B1E2B";
   const sc = (px) => Math.round(px * scale);
-  const sub = [b.name, b.region].filter(Boolean).join(" · ");
+  // wijn bovenaan in het vet, producent eronder
+  const sub = [b.producer, b.region].filter(Boolean).join(" · ");
   return (
     <div style={S.row} onClick={onOpen} className="row">
       <div style={{ ...S.colorDot, background: dot, alignSelf: "flex-start", marginTop: sc(6) }} title={b.color} />
       <div style={S.rowMain}>
         <div style={S.rowLine}>
-          <span style={{ ...S.producer, fontSize: sc(15), flex: 1, minWidth: 0 }}>{b.producer || b.name || "—"}</span>
+          <span style={{ ...S.producer, fontSize: sc(15), flex: 1, minWidth: 0 }}>{b.name || b.producer || "—"}</span>
           <span style={S.rowLineRight}>
             {b.vintage && <span style={{ ...S.vintage, fontSize: sc(14) }}>{b.vintage}</span>}
             <span style={{ ...S.qtyPill, fontSize: sc(12) }}>{b.quantity || 1}×</span>
@@ -1869,6 +1950,8 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
         {b.location && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Locatie</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.location}</p></div>}
         {b.tasteNotes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Mijn proefnotities</div><p style={{ ...S.bodyText, fontSize: sc(14), whiteSpace: "pre-wrap" }}>{b.tasteNotes}</p></div>}
         {b.notes && <div><div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Notities</div><p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.notes}</p></div>}
+
+        <WineChat b={b} sc={sc} />
       </div>
 
       <div style={S.modalFoot}>
@@ -1880,6 +1963,68 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
     </Overlay>
   );
 }
+// ---------- vraag de sommelier over deze ene fles ----------
+const WIJN_TIPS = [
+  "Vertel over de historiek van deze wijnbouwer",
+  "Waar past deze wijn bij aan tafel?",
+  "Hoe lang kan ik deze fles nog bewaren?",
+];
+function WineChat({ b, sc }) {
+  const [thread, setThread] = useState([]);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const send = async (text) => {
+    const vraag = String(text ?? q).trim();
+    if (!vraag || busy) return;
+    setQ(""); setErr(""); setBusy(true);
+    try {
+      const a = await askWineQuestion({ b, question: vraag, history: thread });
+      setThread((t) => [...t, { q: vraag, a }]);
+    } catch (e) {
+      setErr(e.message || "Er ging iets mis.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Vraag de sommelier over deze wijn</div>
+      {thread.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 12 }}>
+          {thread.map((t, i) => (
+            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ ...S.chatQ, fontSize: sc(15), maxWidth: "92%" }}>{t.q}</div>
+              <div style={{ ...S.chatA, fontSize: sc(15), maxWidth: "100%" }}>{t.a}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {!thread.length && !busy && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          {WIJN_TIPS.map((t) => (
+            <button key={t} className="mi" style={{ ...S.chatTip, fontSize: sc(14), padding: "8px 13px" }} onClick={() => send(t)}>{t}</button>
+          ))}
+        </div>
+      )}
+      {busy && <div style={{ ...S.jobPending, padding: "6px 0" }}><Loader2 className="spin" size={16} /> De sommelier zoekt het op…</div>}
+      {err && <div style={{ ...S.jobError, padding: "6px 0" }}><AlertCircle size={15} /> {err}</div>}
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <textarea
+          style={{ ...S.input, flex: 1, minHeight: 74, maxHeight: 180, resize: "vertical", lineHeight: 1.5 }}
+          rows={3}
+          placeholder={thread.length ? "Nog een vraag over deze fles…" : "Bv. wat maakt deze wijn bijzonder?"}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
+        <button style={{ ...S.btnPrimary, height: 46 }} onClick={() => send()} disabled={busy || !q.trim()}>
+          {busy ? <Loader2 className="spin" size={15} /> : <Send size={15} />} Vraag
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ValCell({ label, value, sub, muted, sc }) {
   return (
     <div style={S.valCell}>

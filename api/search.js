@@ -54,6 +54,7 @@ async function ddg(query) {
     ["https://html.duckduckgo.com/html/", parseHtmlResults],
     ["https://lite.duckduckgo.com/lite/", parseLiteResults],
   ];
+  let mislukt = true; // blijft true zolang geen enkele poging een pagina opleverde
   for (const [url, parse] of attempts) {
     try {
       const r = await fetch(url, {
@@ -70,9 +71,11 @@ async function ddg(query) {
       const html = await r.text();
       const res = parse(html);
       if (res.length) return res;
-    } catch {}
+      mislukt = false; // pagina kwam binnen, maar zonder resultaten
+    } catch { mislukt = true; }
   }
-  return [];
+  // null = bron was onbereikbaar, [] = bron antwoordde maar gaf niets
+  return mislukt ? null : [];
 }
 
 // Bron-link naar Vivino: ALTIJD de zoekpagina op naam + jaargang.
@@ -85,7 +88,9 @@ function vivinoUrl(w, year) {
 // Vivino-marktprijzen: echte winkelprijzen per jaargang in EUR voor de Belgische markt.
 // Dit vervangt het "gokken" van een prijs door de AI.
 async function vivino(wine) {
-  const term = [wine.producer, wine.name, wine.vintage].filter(Boolean).join(" ").trim();
+  // 'term' is de opgekuiste zoekterm van de app (zonder dubbele producentnaam);
+  // valt die weg, dan bouwen we hem hier alsnog uit de losse velden.
+  const term = String(wine.term || "").trim() || [wine.producer, wine.name, wine.vintage].filter(Boolean).join(" ").trim();
   if (!term) return [];
   const p = new URLSearchParams({
     country_code: "BE", currency_code: "EUR",
@@ -102,7 +107,7 @@ async function vivino(wine) {
         "referer": "https://www.vivino.com/",
       },
     });
-    if (!r.ok) return [];
+    if (!r.ok) return null;   // geblokkeerd of stuk — niet hetzelfde als 'niets gevonden'
     const j = await r.json();
     const matches = (j && j.explore_vintage && j.explore_vintage.matches) || [];
     return matches.map((m) => {
@@ -125,7 +130,7 @@ async function vivino(wine) {
       // wel blijven voor de Vivino-score (rating + aantal beoordelingen)
       .map((o) => (o.price && o.currency === "EUR" ? o : { ...o, price: null }))
       .filter((o) => o.price || (o.rating && o.ratings));
-  } catch { return []; }
+  } catch { return null; }
 }
 
 export default async function handler(req, res) {
@@ -139,8 +144,16 @@ export default async function handler(req, res) {
       q ? ddg(q) : Promise.resolve([]),
       wine ? vivino(wine) : Promise.resolve([]),
     ]);
-    res.status(200).json({ results, offers });
+    // sources maakt het verschil zichtbaar tussen "bron gaf niets terug" en
+    // "bron was onbereikbaar"; anders lijkt een geblokkeerde bron op een wijn
+    // waarover niets te vinden is.
+    const staat = (v, gevraagd) => (!gevraagd ? "niet gevraagd" : v === null ? "onbereikbaar" : v.length ? "ok" : "leeg");
+    res.status(200).json({
+      results: results || [],
+      offers: offers || [],
+      sources: { web: staat(results, !!q), vivino: staat(offers, !!wine) },
+    });
   } catch {
-    res.status(200).json({ results: [], offers: [] });
+    res.status(200).json({ results: [], offers: [], sources: { web: "fout", vivino: "fout" } });
   }
 }
