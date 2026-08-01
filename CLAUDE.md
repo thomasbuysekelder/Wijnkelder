@@ -73,6 +73,11 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - Vivino is een extra bovenop de snippets, geen vereiste: valt de bron weg of
   geeft ze niets terug, dan blijven de snippets werken en blijft de prijs anders
   gewoon leeg.
+- De waarschuwing "let op: Vivino noemt deze wijn X" verschijnt ENKEL wanneer de
+  gevonden naam mijn hele naam bevat én er woorden bij heeft ("Chambertin Clos de
+  Beze" bij een "Chambertin"). Noemt de bron de wijn gewoon anders — een
+  Haut-Brion heet bij Vivino "Pessac-Leognan" — dan is er niets aan de hand en
+  zwijgt de app.
 - Waar de prijs op steunt, staat altijd in `priceNote` en is zichtbaar op de
   detailkaart. Een nieuwe opzoeking mag de prijs van een vorige opzoeking
   overschrijven (anders kan je een foute prijs nooit corrigeren), maar NOOIT een
@@ -115,6 +120,9 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   de titel onder de klok en de notch.
 
 ## Opmaak van het startscherm
+- De bedragen staan ALTIJD dicht bij het openen van de app. Dat wordt bewust niet
+  onthouden: je moet ze zelf openvouwen, zodat er niets op je scherm staat wanneer
+  je de kelder aan iemand toont.
 - Boven het cijferblok staat één regel "N flessen · M wijnen" met rechts de knop om
   bedragen te verbergen. Zet daar nooit een opschrift naast dat kan afbreken.
 - De bedragen staan in gelijke vakjes op een raster (`S.ledger` + `S.stat`), met

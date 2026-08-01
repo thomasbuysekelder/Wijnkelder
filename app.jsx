@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v55";
+const APP_VERSION = "kelder-v56";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -206,7 +206,6 @@ function decodeBackup(text) {
 // vangnet, ook als er ooit iets misgaat tijdens het bewaren.
 const PREV_KEY = STORAGE_KEY + "-vorige";
 // voorkeur, geen kelderdata: aparte sleutel zodat de kelder er nooit door geraakt wordt
-const GELD_KEY = "wijnkelder-toon-geld";
 const NAAM_KEY = "wijnkelder-naam";
 const STANDAARDNAAM = "Wijnkelder";
 
@@ -431,6 +430,7 @@ const ALGEMEEN = new Set([
   "freres", "frères", "figli", "hijos", "and", "the", "van", "der", "des", "les", "del",
   "della", "delle", "dei", "degli", "produttori", "societa", "società", "srl", "spa",
   "france", "italia", "italie", "italy", "espana", "españa", "spanje", "product",
+  "classe", "classé", "class", "premier", "grand", "vieilles", "selection",
 ]);
 
 // Een woord telt als "gekend" wanneer het al ergens bij de fles staat. We
@@ -941,9 +941,20 @@ async function lookupWineFull(b) {
 function applyMarketPrice(res, mp, b, items, rates, offers) {
   // welke wijn heeft Vivino ons eigenlijk gegeven? Wijkt die naam af van wat er
   // bij de fles staat, dan hoort dat in de notitie
-  const gekozen = vivinoKeuze(offers, b).lijst[0];
-  const anders = gekozen && keyTokens(gekozen.name).join(" ") !== keyTokens(b.name).join(" ")
-    ? ` \u2014 Vivino noemt deze wijn "${gekozen.name}"` : "";
+  // Enkel melden wanneer de gevonden wijn woorden bevat die niet bij mijn fles
+  // horen. Dat Vivino een Haut-Brion "Pessac-Leognan" noemt is geen verschil dat
+  // je moet nakijken; "Clos de Beze" bij een Chambertin wel.
+  const keuze = vivinoKeuze(offers, b);
+  // Waarschuw enkel bij het gevaarlijke geval: de gevonden naam bevat MIJN hele
+  // naam en nog woorden erbij, zoals "Chambertin Clos de Beze" bij een
+  // "Chambertin". Noemt Vivino de wijn gewoon anders (een Haut-Brion heet daar
+  // "Pessac-Leognan"), dan is er niets aan de hand en zwijgen we.
+  const mijnNaam = keyTokens(b.name);
+  const eerste = keuze.lijst[0];
+  const specifieker = eerste && mijnNaam.length
+    && mijnNaam.every((t) => keyTokens(eerste.name).includes(t));
+  const anders = specifieker && keuze.vreemd > 0
+    ? ` \u2014 let op: Vivino noemt deze wijn "${eerste.name}"` : "";
   const btwNoot = (mp && mp.btw ? ", btw bijgeteld" : "") +
     (mp && mp.munten && mp.munten.length ? `, omgerekend van ${mp.munten.join(" en ")} (ECB-dagkoers)` : "");
   const found = num(res.retailPrice);
@@ -1434,10 +1445,10 @@ export default function App() {
   // Een fles die je elders dronk staat wel in de gegevens (voor het logboek en de
   // sommelier) maar hoort niet in je kelder: niet in de lijst, niet in de cijfers.
   const kelder = useMemo(() => bottles.filter((b) => !b.buitenKelder), [bottles]);
-  // financiële cijfers standaard verborgen; de keuze blijft bewaard
+  // Bewust NIET onthouden tussen twee keer openen: de app start altijd met de
+  // bedragen dicht, zodat er niets op je scherm staat wanneer je ze aan iemand toont.
   const [toonGeld, setToonGeld] = useState(false);
-  useEffect(() => { try { if (LS && LS.getItem(GELD_KEY) === "1") setToonGeld(true); } catch {} }, []);
-  const wisselGeld = () => setToonGeld((v) => { const n = !v; try { if (LS) LS.setItem(GELD_KEY, n ? "1" : "0"); } catch {} return n; });
+  const wisselGeld = () => setToonGeld((v) => !v);
   // eigen naam voor de app; staat los van de kelderdata
   const [appNaam, setAppNaam] = useState(STANDAARDNAAM);
   const [naamBewerken, setNaamBewerken] = useState(false);
@@ -2188,9 +2199,9 @@ function BottleFields({ v, on, boven }) {
       <div style={S.formRow}>{fld("grape", "Druif")}{fld("score", "Score", "number", 0.5)}</div>
       <div style={S.formRow}>{fld("region", "Streek")}{fld("country", "Land")}</div>
       <div style={S.formRow}>{fld("location", "Locatie in kelder")}{fld("supplier", "Leverancier")}</div>
-      <div style={S.formRow}>{fld("purchasePrice", "Aankoopprijs (€/fles)", "number")}{fld("retailValue", "Retailwaarde (€/fles, incl. btw)", "number")}</div>
+      <div style={S.formRow}>{fld("purchasePrice", "Aankoop €/fles", "number")}{fld("retailValue", "Retail €/fles, incl. btw", "number")}</div>
       <label style={S.field}>
-        <span style={S.fieldLabel}>Eigen geschatte waarde (€/fles)</span>
+        <span style={S.fieldLabel}>Mijn waarde €/fles</span>
         <input style={S.input} type="number" inputMode="decimal" value={v.ownValue ?? ""} onChange={(e) => on("ownValue", e.target.value)}
           placeholder={money(v.retailValue) > 0 ? `leeg = retail (${eur(money(v.retailValue))})` : "leeg = retail"} />
       </label>
@@ -3320,7 +3331,9 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
             <h3 style={{ ...S.modalTitle, fontSize: sc(20) }}>{b.name || b.producer || "Wijn"}</h3>
             {b.vintage && <span style={{ ...S.vintage, fontSize: sc(15) }}>{b.vintage}</span>}
           </div>
-          {b.producer && b.name && <div style={{ ...S.rowSub, fontSize: sc(13), marginTop: 3 }}>{b.producer}</div>}
+          {b.producer && b.name && norm(b.producer) !== norm(b.name) && (
+            <div style={{ ...S.rowSub, fontSize: sc(13), marginTop: 3 }}>{b.producer}</div>
+          )}
         </div>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
       </div>
