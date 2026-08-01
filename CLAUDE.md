@@ -99,6 +99,14 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   een render). React gooit het invoerveld dan bij elke toetsaanslag weg en je kan
   maar één letter tegelijk typen. `ZoekRij` staat daarom op modulehoogte.
 
+## Opmaak van het startscherm
+- Boven het cijferblok staat één regel "N flessen · M wijnen" met rechts de knop om
+  bedragen te verbergen. Zet daar nooit een opschrift naast dat kan afbreken.
+- De bedragen staan in gelijke vakjes op een raster (`S.ledger` + `S.stat`), met
+  dezelfde rand en hoeken als de blokken op de detailkaart.
+- Het zoekveld neemt de volle breedte; de keuzelijsten eronder delen de rest
+  (`S.select` met `flex: 1 1 150px`), dus twee per rij op een telefoon.
+
 ## Opmaak van de detailkaart
 - De kaart is een schermvullend venster: kop en knoppenbalk staan VAST, alleen het
   middenstuk schuift (`S.detailBody`). "Bewerken" moet altijd bereikbaar zijn zonder

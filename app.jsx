@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v52";
+const APP_VERSION = "kelder-v53";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1941,28 +1941,32 @@ export default function App() {
           <button style={S.verkenKnop} onClick={() => setShowKaart(true)} title="Mijn wijnen op de kaart"><Globe size={15} /> Kaart</button>
         </div>
 
-        <div style={S.ledger}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, minWidth: 0 }}>
-            <Stat label="In kelder" value={`${stats.flessen} flessen`} sub={`${stats.wijnen} wijnen`} />
-            <button style={S.geldKnop} onClick={wisselGeld} aria-label={toonGeld ? "Bedragen verbergen" : "Bedragen tonen"}>
-              {toonGeld ? <EyeOff size={14} /> : <Eye size={14} />} {toonGeld ? "verbergen" : "waarde"}
-            </button>
-          </div>
-          {toonGeld && <Stat label="Aankoop" value={eur(stats.cost)} />}
-          {toonGeld && <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />}
-          {toonGeld && <Stat
-            label="Ongerealiseerd"
-            value={stats.vgFlessen ? `${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}` : "—"}
-            sub={stats.vgFlessen
-              ? `${stats.gain >= 0 ? "+" : ""}${stats.pct.toFixed(1)}%${stats.volledig ? "" : ` · op ${stats.vgFlessen} van ${stats.flessen} flessen`}`
-              : "nog geen fles met aankoop én waarde"}
-            accent={!stats.vgFlessen ? undefined : stats.gain >= 0 ? "green" : "red"} />}
+        {/* Vier gelijke vakjes op een raster; de knop om bedragen te verbergen
+            staat er los boven, zodat hij geen opschrift meer opzij duwt. */}
+        <div style={S.ledgerKop}>
+          <span style={S.ledgerTitel}>{stats.flessen} flessen · {stats.wijnen} wijnen</span>
+          <button style={S.geldKnop} onClick={wisselGeld} aria-label={toonGeld ? "Bedragen verbergen" : "Bedragen tonen"}>
+            {toonGeld ? <EyeOff size={14} /> : <Eye size={14} />} {toonGeld ? "verbergen" : "waarde"}
+          </button>
         </div>
+        {toonGeld && (
+          <div style={S.ledger}>
+            <Stat label="Aankoop" value={eur(stats.cost)} />
+            <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />
+            <Stat
+              label="Ongerealiseerd"
+              value={stats.vgFlessen ? `${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}` : "—"}
+              sub={stats.vgFlessen
+                ? `${stats.gain >= 0 ? "+" : ""}${stats.pct.toFixed(1)}%${stats.volledig ? "" : ` · op ${stats.vgFlessen} van ${stats.flessen}`}`
+                : "nog geen fles met aankoop én waarde"}
+              accent={!stats.vgFlessen ? undefined : stats.gain >= 0 ? "green" : "red"} />
+          </div>
+        )}
       </header>
 
       {/* ---- toolbar ---- */}
       <div style={S.toolbar}>
-        <div style={S.searchWrap}>
+        <div style={{ ...S.searchWrap, flex: "1 1 100%" }}>
           <Search size={16} style={{ color: "var(--ink-dim)" }} />
           <input style={S.search} placeholder="Zoek producent, wijn, streek, locatie…"
             value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -3630,16 +3634,18 @@ const S = {
   menuItem: { display: "flex", alignItems: "center", gap: 9, background: "transparent", border: "none", color: "var(--ink)", padding: "10px 12px", borderRadius: 8, fontSize: 13.5, cursor: "pointer", textAlign: "left", width: "100%" },
   menuSep: { height: 1, background: "var(--line)", margin: "4px 6px" },
   actions: { display: "flex", gap: 8, flexWrap: "wrap" },
-  ledger: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px 16px", padding: "16px 0 14px" },
-  stat: { minWidth: 0 },
-  statLabel: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 1.4, color: "var(--ink-dim)", marginBottom: 4 },
+  ledgerKop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, paddingTop: 14 },
+  ledgerTitel: { fontFamily: "'Spectral',serif", fontSize: 17, color: "var(--ink)", letterSpacing: 0.2 },
+  ledger: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 9, padding: "12px 0 14px" },
+  stat: { minWidth: 0, background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 13px", display: "flex", flexDirection: "column" },
+  statLabel: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 1.2, color: "var(--ink-dim)", marginBottom: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   statValue: { fontFamily: "'JetBrains Mono',monospace", fontSize: 18, fontWeight: 500, whiteSpace: "nowrap", letterSpacing: -0.3 },
   statSub: { fontFamily: "'JetBrains Mono',monospace", fontSize: 12, marginTop: 2 },
 
   toolbar: { display: "flex", gap: 8, padding: "16px 22px", flexWrap: "wrap", alignItems: "center" },
   searchWrap: { display: "flex", alignItems: "center", gap: 8, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 13px", flex: "1 1 260px", height: 40 },
   search: { border: "none", background: "transparent", color: "var(--ink)", flex: 1, fontSize: 16 },
-  select: { background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink2)", height: 40, padding: "0 12px", fontSize: 16, cursor: "pointer" },
+  select: { flex: "1 1 150px", minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink2)", height: 40, padding: "0 12px", fontSize: 16, cursor: "pointer" },
 
   list: { padding: "4px 12px 0" },
   row: { display: "flex", alignItems: "flex-start", gap: 12, padding: "13px 10px 14px 12px", borderBottom: "1px solid var(--bg3)", cursor: "pointer" },
