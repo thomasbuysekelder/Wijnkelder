@@ -41,6 +41,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   jaargang, (2) Vivino-marktprijs van naburige jaargangen ("ter indicatie"),
   (3) een bedrag dat het model LETTERLIJK uit de zoeksnippets haalt, mét bron
   (`priceSource`; zonder bron telt het niet), (4) niets → leeg.
+- Kies je een andere wijn, dan wist `wisWijnGegevens()` ALLES wat over de vorige
+  wijn ging: druif, beschrijving, recensies, score, drinkvenster, coördinaten,
+  etiketfoto en de opgezochte prijs. Wat van de gebruiker zelf komt (aantal,
+  aankoopprijs, leverancier, locatie, proefnotities) blijft staan. Zonder dat bleef
+  bijvoorbeeld de druif van Tenuta di Trinoro op een Contrada Guardiola staan,
+  want een opzoeking overschrijft een al ingevuld veld nooit.
 - Kan de app het niet zeker weten, dan LAAT ZE KIEZEN. `KiesWijnModal` toont de
   wijnen die de catalogus teruggaf (naam, producent, streek, jaargangen, etiket) en
   de gebruiker duidt de juiste aan. Bereikbaar via "Zoek de juiste wijn op" in het
@@ -98,6 +104,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - Maak NOOIT een component binnen een andere component (`const Iets = () => …` in
   een render). React gooit het invoerveld dan bij elke toetsaanslag weg en je kan
   maar één letter tegelijk typen. `ZoekRij` staat daarom op modulehoogte.
+
+## Vensters en het toetsenbord
+- iOS verkleint het zichtbare scherm wanneer het toetsenbord opengaat, maar `100vh`
+  blijft even groot: de kop schoof weg en de knoppenbalk verdween onder de toetsen.
+  `useZichtbareHoogte()` meet `window.visualViewport` en zet `--vvh` en `--vvtop`.
+  Meet je een venster in `vh`, dan doe je het fout — gebruik `var(--vvh)`.
 
 ## Opmaak van het startscherm
 - Boven het cijferblok staat één regel "N flessen · M wijnen" met rechts de knop om

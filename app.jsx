@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v53";
+const APP_VERSION = "kelder-v54";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1425,6 +1425,7 @@ export default function App() {
   const [showSomm, setShowSomm] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [drinkFles, setDrinkFles] = useState(null);
+  useZichtbareHoogte();
   const [showKaart, setShowKaart] = useState(false);
   const [showLog, setShowLog] = useState(false);
   // Een fles die je elders dronk staat wel in de gegevens (voor het logboek en de
@@ -1954,6 +1955,7 @@ export default function App() {
             <Stat label="Aankoop" value={eur(stats.cost)} />
             <Stat label="Kelderwaarde" value={eur(stats.value)} accent="gold" />
             <Stat
+              breed
               label="Ongerealiseerd"
               value={stats.vgFlessen ? `${stats.gain >= 0 ? "+" : ""}${eur(stats.gain)}` : "—"}
               sub={stats.vgFlessen
@@ -2074,10 +2076,10 @@ export default function App() {
 }
 
 // ---------- small components ----------
-function Stat({ label, value, sub, accent }) {
+function Stat({ label, value, sub, accent, breed }) {
   const col = accent === "gold" ? "var(--gold)" : accent === "green" ? "var(--green)" : accent === "red" ? "var(--red)" : "var(--ink)";
   return (
-    <div style={S.stat}>
+    <div style={{ ...S.stat, ...(breed ? { gridColumn: "1 / -1" } : null) }}>
       <div style={S.statLabel}>{label}</div>
       <div style={{ ...S.statValue, color: col }}>{value}</div>
       {sub && <div style={{ ...S.statSub, color: accent ? col : "var(--ink-dim)" }}>{sub}</div>}
@@ -2217,9 +2219,7 @@ function EditModal({ edit, setEdit, onSave, onMultiVintage }) {
       {kiezen && (
         <KiesWijnModal start={wineTerm(edit)}
           onKies={(w) => {
-            setEdit({ ...edit, producer: w.producer || edit.producer, name: w.name || edit.name,
-              region: w.region || edit.region, country: w.country || edit.country,
-              imageUrl: w.image || edit.imageUrl });
+            setEdit({ ...edit, ...wisWijnGegevens(w) });
             setKiezen(false);
           }}
           onClose={() => setKiezen(false)} />
@@ -2309,14 +2309,7 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
     let draft = null;
     setJobs((prev) => prev.map((j) => {
       if (j.id !== jobId) return j;
-      draft = {
-        ...(j.data || {}),
-        producer: w.producer || (j.data || {}).producer || "",
-        name: w.name || (j.data || {}).name || "",
-        region: w.region || (j.data || {}).region || "",
-        country: w.country || (j.data || {}).country || "",
-        imageUrl: w.image || (j.data || {}).imageUrl || "",
-      };
+      draft = { ...(j.data || {}), ...wisWijnGegevens(w) };
       return { ...j, status: "enriching", error: null, data: draft };
     }));
     if (draft && onLookup) {
@@ -2339,7 +2332,7 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
         <h3 style={S.modalTitle}>Foto-analyse</h3>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxHeight: "72vh", overflowY: "auto" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxHeight: "calc(var(--vvh, 100vh) - 190px)", overflowY: "auto" }}>
         {jobs.map((job) => (
           <div key={job.id} style={S.job}>
             <div style={S.jobTop}>
@@ -2400,6 +2393,22 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
 }
 
 // full = bijna schermvullend venster met een eigen scrollgebied binnenin
+function useZichtbareHoogte() {
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv || typeof document === "undefined") return;
+    const zet = () => {
+      const el = document.documentElement;
+      el.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
+      el.style.setProperty("--vvtop", `${Math.round(vv.offsetTop)}px`);
+    };
+    zet();
+    vv.addEventListener("resize", zet);
+    vv.addEventListener("scroll", zet);
+    return () => { vv.removeEventListener("resize", zet); vv.removeEventListener("scroll", zet); };
+  }, []);
+}
+
 function Overlay({ children, onClose, small, wide, full }) {
   const box = full
     ? { ...S.modal, ...S.modalFull }
@@ -2854,6 +2863,21 @@ async function zoekWijnen(term) {
     if (w && o.vintage && !w.jaargangen.includes(String(o.vintage))) w.jaargangen.push(String(o.vintage));
   }
   return uit.slice(0, 12);
+}
+
+// Alles wat over DE WIJN gaat en dus bij de vorige, foute keuze hoorde. Wat van
+// de gebruiker zelf komt (aantal, aankoopprijs, proefnotities, locatie) blijft.
+function wisWijnGegevens(w) {
+  return {
+    producer: w.producer || "", name: w.name || "",
+    region: w.region || "", country: w.country || "",
+    imageUrl: w.image || "",
+    grape: "", description: "", reviews: "", score: "",
+    retailValue: "", priceNote: "", priceUrl: "", priceManual: false,
+    drinkFrom: "", drinkTo: "",
+    lat: "", lng: "", placeName: "",
+    verifyNote: "", enriched: false,
+  };
 }
 
 function KiesWijnModal({ start, onKies, onClose }) {
@@ -3682,11 +3706,11 @@ const S = {
   btnGhost: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "0 15px", height: 38, borderRadius: 10, fontSize: 13, fontWeight: 500, cursor: "pointer" },
   btnLink: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "var(--gold)", fontSize: 13, cursor: "pointer" },
 
-  overlay: { cursor: "pointer", position: "fixed", inset: 0, background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
-  modal: { cursor: "auto", width: "100%", background: "linear-gradient(180deg, #201B17, #1A1613)", border: "1px solid var(--line2)", borderRadius: 16, padding: 22, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 30px 80px rgba(0,0,0,.6)" },
+  overlay: { cursor: "pointer", position: "fixed", top: "var(--vvtop, 0px)", left: 0, right: 0, height: "var(--vvh, 100%)", background: "rgba(6,4,3,.74)", backdropFilter: "blur(3px)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 },
+  modal: { cursor: "auto", width: "100%", background: "linear-gradient(180deg, #201B17, #1A1613)", border: "1px solid var(--line2)", borderRadius: 16, padding: 22, maxHeight: "100%", overflowY: "auto", boxShadow: "0 30px 80px rgba(0,0,0,.6)" },
   modalFull: {
-    maxWidth: 940, height: "calc(100vh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom))",
-    maxHeight: "none", overflow: "hidden", display: "flex", flexDirection: "column",
+    maxWidth: 940, height: "100%", maxHeight: "100%",
+    overflow: "hidden", display: "flex", flexDirection: "column",
     padding: "18px 18px calc(14px + env(safe-area-inset-bottom))",
   },
   modalHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 18 },
