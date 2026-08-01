@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v25";
+const APP_VERSION = "kelder-v26";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -371,6 +371,12 @@ function parseAmount(s) {
 // tekst die verraadt dat het niet om één gewone fles van 75 cl gaat
 const NIET_FLES = /per\s*(2|3|4|6|12)\b|\b(6|12)\s*(x|st|flessen)|doos|kist|case\s*of|halve\s*fles|37[,.]?5\s*cl|375\s*ml|magnum|1[,.]5\s*l\b|\b3\s*l\b|50\s*cl|500\s*ml|per\s*liter|\/\s*l\b/i;
 const GELDBEDRAG = /(?:€|eur)\s*([0-9][0-9.,]{0,9})|([0-9][0-9.,]{2,9})\s*(?:€|eur\b)/gi;
+// Webshopfragmenten schrijven de prijs vaak zónder muntteken ("795,00 per fles").
+// Twee decimalen achter een komma of punt is in die context vrijwel altijd een prijs.
+const BEDRAG_KAAL = /\b\d{1,3}(?:[.\s]\d{3})+[,.]\d{2}\b|\b\d+[,.]\d{2}\b/g;
+const PRIJSCONTEXT = /prijs|prijzen|kopen|bestel|per\s*fles|voorraad|winkel|vanaf|aanbieding|€|\beur\b/i;
+const VERZENDKOST = /verzend|leverings?kost|shipping|porto|bezorg/i;
+const GEEN_PRIJS_ACHTER = /^\s*(punten|points|score|beoordel|rating|\/\s*(5|10|20|100)\b|%)/i;
 
 function snippetPrices(items, b) {
   const want = keyTokens(wineTerm(b));
@@ -382,11 +388,23 @@ function snippetPrices(items, b) {
     if (!want.length || tokenRatio(want, hay) < 0.6) continue;
     if (NIET_FLES.test(tekst)) continue;
     const jaar = (tekst.match(/\b(19[5-9]\d|20[0-4]\d)\b/g) || []).map(Number);
-    GELDBEDRAG.lastIndex = 0;
+    const gezien = new Set();
+    const voegToe = (ruw, index, lengte) => {
+      // verzendkosten en puntenscores zijn geen flesprijs
+      if (VERZENDKOST.test(tekst.slice(Math.max(0, index - 40), index))) return;
+      if (GEEN_PRIJS_ACHTER.test(tekst.slice(index + lengte, index + lengte + 14))) return;
+      const p = parseAmount(ruw);
+      if (p >= 3 && p <= 50000 && !gezien.has(p)) {
+        gezien.add(p);
+        out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar });
+      }
+    };
     let m;
-    while ((m = GELDBEDRAG.exec(tekst))) {
-      const p = parseAmount(m[1] || m[2]);
-      if (p >= 3 && p <= 50000) out.push({ price: p, url: it.url || "", title: it.title || "", years: jaar });
+    GELDBEDRAG.lastIndex = 0;
+    while ((m = GELDBEDRAG.exec(tekst))) voegToe(m[1] || m[2], m.index, m[0].length);
+    if (PRIJSCONTEXT.test(tekst)) {
+      BEDRAG_KAAL.lastIndex = 0;
+      while ((m = BEDRAG_KAAL.exec(tekst))) voegToe(m[0], m.index, m[0].length);
     }
   }
   return out;
