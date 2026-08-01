@@ -162,8 +162,18 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - Geen tools, ook hier niet: de web_search-regel hierboven blijft gelden.
 
 ## Drinklogboek
-- De knop "Gedronken" op de detailkaart opent `DrinkModal`: je vinkt er een AANTAL
+- De knop "Fles weg" op de detailkaart opent `DrinkModal`: je vinkt er een AANTAL
   flessen tegelijk af (nooit meer dan er in de kelder liggen), met een datum.
+- `WEG_REDENEN` bepaalt waarom een fles verdwijnt: gedronken, verkocht, weggegeven,
+  kapot. ENKEL "gedronken" telt mee in de drinkstatistiek; verkocht en weggegeven
+  worden apart gemeld. Het draaiboek verschijnt alleen bij "gedronken". Een regel
+  zonder `type` is oud en telt als gedronken.
+- Proeven gebeurt met AANVINKBARE woorden (kleur, neus primair/secundair/tertiair,
+  smaak, evolutie) die als lijstjes bewaard worden, zodat er later op geteld kan
+  worden. Het veld "eigen woorden" vangt op wat er niet tussen staat. Zet nieuwe
+  aromawoorden altijd in `DRINK_VRAGEN`, nooit los in een component.
+- `RIJPHEID` zet mijn oordeel ("mooi op dronk", "kort bewaarpotentieel", "over de
+  piek") in dezelfde keuzelijst als de termijn in jaren; beide voeden `herproefOp`.
 - `DRINK_VRAGEN` is het vaste draaiboek. Alles mag leeg blijven; wat leeg is, is
   niet van toepassing en komt NIET in het logboek. Vraag je een veld erbij, zet
   het in die ene lijst — het venster, het logboek op de detailkaart en de

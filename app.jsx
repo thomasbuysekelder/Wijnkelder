@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v46";
+const APP_VERSION = "kelder-v47";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -30,14 +30,54 @@ const EMPTY = {
 };
 
 // Flesformaten. 75 cl is de norm; alle prijzen die we opzoeken gelden daarvoor.
-// Draaiboek bij het afvinken van een gedronken fles. Alles mag leeg blijven; wat
-// leeg is, is gewoon niet van toepassing en komt niet in het logboek terecht.
+// Draaiboek bij het afvinken van een fles. Alles mag leeg blijven; wat leeg is, is
+// niet van toepassing en komt niet in het logboek. Wie een veld bijzet, zet het
+// HIER: het venster, het logboek en de samenvatting voor de sommelier lezen alle
+// drie uit deze ene lijst.
+// De aanvinkbare woorden staan vast, zodat je er later op kan tellen; het veld
+// "eigen woorden" vangt alles op wat er niet tussen staat.
+const AROMA_PRIMAIR = [
+  "citrus", "appel/peer", "steenfruit", "tropisch fruit", "rood fruit", "zwart fruit",
+  "gedroogd fruit", "bloemen", "kruiden", "peper", "groen/plantaardig", "mineraal", "vuursteen",
+];
+const AROMA_SECUNDAIR = [
+  "gist", "brood/brioche", "boter", "room", "vanille", "kokos", "toast", "geroosterd hout",
+  "ceder", "rook", "chocolade", "melkzuur",
+];
+const AROMA_TERTIAIR = [
+  "leer", "tabak", "paddenstoel", "onderhout", "truffel", "noten", "karamel", "honing",
+  "gedroogde bloemen", "balsamico", "vlees/wild", "petrol",
+];
+
 const DRINK_VRAGEN = [
   { k: "gelegenheid", label: "Gelegenheid of gezelschap", hint: "bv. verjaardag Marie, met Jan en An" },
   { k: "gerecht", label: "Wat aten we erbij", hint: "bv. ossobuco" },
-  { k: "indruk", label: "Hoe smaakte hij nu", hint: "kleur, neus, smaak, evolutie", groot: true },
+  { k: "kleur", label: "Kleur", chips: ["bleek", "diep", "helder", "troebel", "paars", "robijn", "granaat", "baksteen", "strogeel", "goudgeel", "amber", "koper", "zalm"] },
+  { k: "neusPrimair", label: "Neus · primair (fruit, bloem, kruid)", chips: AROMA_PRIMAIR },
+  { k: "neusSecundair", label: "Neus · secundair (gisting, hout)", chips: AROMA_SECUNDAIR },
+  { k: "neusTertiair", label: "Neus · tertiair (rijping)", chips: AROMA_TERTIAIR },
+  { k: "smaak", label: "Smaak", chips: ["droog", "halfdroog", "zoet", "frisse zuren", "zachte zuren", "stevige tannines", "fijne tannines", "stroef", "licht", "medium", "vol", "stevige alcohol", "zilt", "bitter", "lange afdronk", "korte afdronk"] },
+  { k: "evolutie", label: "Evolutie", chips: ["nog gesloten", "nog jong", "opent traag", "op dronk", "volle rijpheid", "begint te dalen", "over de piek", "vermoeid", "kurk of afwijking"] },
+  { k: "indruk", label: "Eigen woorden", hint: "wat de vinkjes niet vatten", groot: true },
   { k: "punten", label: "Mijn score op 100", hint: "bv. 95", getal: true },
-  { k: "nogKopen", label: "Opnieuw kopen?", keuzes: ["", "ja", "misschien", "nee"] },
+  { k: "nogKopen", label: "Zou ik hem opnieuw kopen?", keuzes: ["", "ja", "misschien", "nee"] },
+];
+
+// Waarom een fles uit de kelder verdwijnt. Enkel "gedronken" telt mee in de
+// drinkstatistiek; verkocht of weggegeven hoort daar niet thuis.
+const WEG_REDENEN = [
+  { k: "gedronken", label: "Gedronken", werkwoord: "afgevinkt" },
+  { k: "verkocht", label: "Verkocht", werkwoord: "verkocht" },
+  { k: "weggegeven", label: "Weggegeven", werkwoord: "weggegeven" },
+  { k: "kapot", label: "Kapot of verloren", werkwoord: "afgeboekt" },
+];
+
+// Mijn oordeel over de rijpheid, en wanneer ik hem opnieuw wil proeven. De twee
+// staan in één keuzelijst omdat het dezelfde vraag beantwoordt: en nu?
+const RIJPHEID = [
+  { k: "rijp", label: "Mooi op dronk", jaren: 0 },
+  { k: "kort", label: "Op dronk, kort bewaarpotentieel", jaren: 1 },
+  { k: "over", label: "Over de piek, drinken", jaren: 0 },
 ];
 
 const FORMATEN = [
@@ -1103,31 +1143,63 @@ const SOMM_SYSTEM =
 
 // Wat je effectief gedronken hebt, deterministisch geteld uit het logboek. Het
 // model rekent hier niets zelf uit: het krijgt de cijfers kant en klaar.
+// De aangevinkte woorden en de eigen tekst tot één leesbare zin, want dat is wat
+// er bij de proefnotities terechtkomt.
+// Oude regels uit het logboek hebben nog geen soort; die waren altijd gedronken.
+const logSoort = (e) => (WEG_REDENEN.find((r) => r.k === (e.type || "gedronken")) || WEG_REDENEN[0]).label.toLowerCase();
+
+function drinkZin(e) {
+  const lijst = (k) => (Array.isArray(e[k]) ? e[k] : []).join(", ");
+  const delen = [
+    lijst("kleur") ? `Kleur: ${lijst("kleur")}.` : "",
+    [lijst("neusPrimair"), lijst("neusSecundair"), lijst("neusTertiair")].filter(Boolean).join(", "),
+    lijst("smaak") ? `Smaak: ${lijst("smaak")}.` : "",
+    lijst("evolutie") ? `Evolutie: ${lijst("evolutie")}.` : "",
+    e.rijpheid || "",
+    String(e.indruk || "").trim(),
+    e.gerecht ? `Bij ${e.gerecht}.` : "",
+    e.gelegenheid ? `(${e.gelegenheid})` : "",
+  ];
+  const neus = delen[1] ? `Neus: ${delen[1]}.` : "";
+  delen[1] = neus;
+  return delen.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
 function drinkSamenvatting(bottles) {
   const rijen = [];
   for (const b of bottles || []) {
-    for (const e of (Array.isArray(b.drinkLog) ? b.drinkLog : [])) {
-      rijen.push({ ...e, b });
-    }
+    for (const e of (Array.isArray(b.drinkLog) ? b.drinkLog : [])) rijen.push({ ...e, b });
   }
   if (!rijen.length) return "";
   rijen.sort((x, y) => String(y.d).localeCompare(String(x.d)));
+  // oude regels hebben nog geen soort; die waren altijd gedronken
+  const gedronken = rijen.filter((x) => (x.type || "gedronken") === "gedronken");
+  const verkocht = rijen.filter((x) => x.type === "verkocht");
   const nu = new Date().toISOString().slice(0, 10);
-  const tel = (vanaf) => {
-    const r = rijen.filter((x) => String(x.d) >= vanaf);
+  const tel = (lijst, vanaf) => {
+    const r = lijst.filter((x) => String(x.d) >= vanaf);
     return { n: r.reduce((s, x) => s + (num(x.n) || 1), 0), v: r.reduce((s, x) => s + (num(x.v) || 0) * (num(x.n) || 1), 0) };
   };
-  const maand = tel(nu.slice(0, 8) + "01");
-  const jaar = tel(nu.slice(0, 4) + "-01-01");
-  const totaal = tel("0000");
   const regel = (l, t) => `${l}: ${t.n} fles${t.n === 1 ? "" : "sen"}${t.v > 0 ? `, samen ongeveer ${eur(t.v)}` : ""}`;
-  const laatste = rijen.slice(0, 12).map((x) => {
-    const extra = DRINK_VRAGEN.map((v) => (x[v.k] ? `${v.label.toLowerCase()}: ${x[v.k]}` : "")).filter(Boolean).join("; ");
+  const laatste = gedronken.slice(0, 12).map((x) => {
+    const extra = DRINK_VRAGEN
+      .map((v) => {
+        const w = Array.isArray(x[v.k]) ? x[v.k].join(", ") : x[v.k];
+        return w ? `${v.label.toLowerCase()}: ${w}` : "";
+      })
+      .filter(Boolean).join("; ");
     return `- ${x.d} · ${(num(x.n) || 1)}× ${[x.b.producer, x.b.name, x.b.vintage].filter(Boolean).join(" ")}` +
-      `${num(x.v) > 0 ? ` (${eur(num(x.v) * (num(x.n) || 1))})` : ""}${extra ? ` — ${extra}` : ""}`;
-  }).join("\n").slice(0, 1600);
-  return `\nMIJN DRINKLOGBOEK (al geteld, gebruik deze cijfers letterlijk):\n` +
-    `${regel("Deze maand", maand)}\n${regel("Dit jaar", jaar)}\n${regel("In totaal", totaal)}\n` +
+      `${num(x.v) > 0 ? ` (${eur(num(x.v) * (num(x.n) || 1))})` : ""}${x.rijpheid ? ` — ${x.rijpheid}` : ""}${extra ? ` — ${extra}` : ""}`;
+  }).join("\n").slice(0, 1800);
+  const vk = verkocht.reduce((s, x) => s + (num(x.n) || 1), 0);
+  const verkoop = vk
+    ? `\nApart hiervan verkocht of weggegeven: ${vk} fles${vk === 1 ? "" : "sen"}. Die tellen NIET mee als gedronken.\n`
+    : "";
+  return "\nMIJN DRINKLOGBOEK (al geteld, gebruik deze cijfers letterlijk):\n" +
+    `${regel("Deze maand gedronken", tel(gedronken, nu.slice(0, 8) + "01"))}\n` +
+    `${regel("Dit jaar gedronken", tel(gedronken, nu.slice(0, 4) + "-01-01"))}\n` +
+    `${regel("In totaal gedronken", tel(gedronken, "0000"))}\n` +
+    verkoop +
     `Laatst gedronken:\n${laatste}\n`;
 }
 
@@ -1458,30 +1530,46 @@ export default function App() {
     flash(`Info opgezocht voor ${lijst.length} jaargang${lijst.length > 1 ? "en" : ""}.`);
   };
 
-  // ---- fles gedronken: aantal afboeken en in het logboek zetten ----
-  const boekGedronken = ({ aantal, datum, herproef, antw }) => {
+  // ---- fles uit de kelder: afboeken en in het logboek zetten ----
+  const boekGedronken = ({ reden, aantal, datum, herproef, opbrengst, antw }) => {
     const b = drinkFles;
     if (!b) return;
     const n = Math.max(1, Math.min(num(b.quantity) || 1, parseInt(aantal) || 1));
+    const info = WEG_REDENEN.find((r) => r.k === reden) || WEG_REDENEN[0];
+    const gedronken = info.k === "gedronken";
     // enkel wat je invulde bewaren; lege antwoorden zijn niet van toepassing
-    const gevuld = Object.fromEntries(Object.entries(antw || {}).filter(([, v]) => String(v || "").trim()));
-    const entry = { d: datum || new Date().toISOString().slice(0, 10), n, v: effVal(b).v || 0, ...gevuld };
+    const gevuld = gedronken
+      ? Object.fromEntries(Object.entries(antw || {})
+          .map(([k, v]) => [k, Array.isArray(v) ? v : String(v || "").trim()])
+          .filter(([, v]) => (Array.isArray(v) ? v.length : v)))
+      : {};
+    const rijp = RIJPHEID.find((r) => r.k === herproef);
+    const entry = {
+      d: datum || new Date().toISOString().slice(0, 10),
+      n, v: effVal(b).v || 0, type: info.k,
+      ...(money(opbrengst) > 0 ? { opbrengst: money(opbrengst) } : {}),
+      ...(rijp ? { rijpheid: rijp.label } : {}),
+      ...gevuld,
+    };
     const log = [...(Array.isArray(b.drinkLog) ? b.drinkLog : []), entry];
-    // de indruk gaat ook naar de proefnotities, want dat is wat de sommelier leest
-    const stukjes = [antw?.indruk, antw?.gerecht ? `Bij ${antw.gerecht}.` : "", antw?.gelegenheid ? `(${antw.gelegenheid})` : ""]
-      .map((x) => String(x || "").trim()).filter(Boolean).join(" ");
+    // wat je proefde gaat ook naar de proefnotities, want dat is het veld dat de
+    // sommelier leest
+    const stukjes = gedronken ? drinkZin(entry) : "";
     const nieuweNotitie = stukjes
       ? [String(b.tasteNotes || "").trim(), `${entry.d}: ${stukjes}`].filter(Boolean).join("\n\n")
       : b.tasteNotes;
+    // "mooi op dronk" en "over de piek" betekenen: nu bekijken. Een termijn in
+    // jaren zet de fles pas later in het filter.
+    const jaren = rijp ? rijp.jaren : (String(herproef).startsWith("j") ? parseInt(String(herproef).slice(1)) : null);
     patchBottle(b.id, {
       quantity: String(Math.max(0, (num(b.quantity) || 0) - n)),
       drinkLog: log,
       tasteNotes: nieuweNotitie,
-      ...(herproef ? { herproefOp: String(NOW + parseInt(herproef)) } : {}),
-      ...(antw?.punten ? { score: String(antw.punten) } : {}),
+      ...(jaren !== null && !isNaN(jaren) ? { herproefOp: String(NOW + jaren) } : {}),
+      ...(gedronken && antw?.punten ? { score: String(antw.punten) } : {}),
     });
     setDrinkFles(null);
-    flash(`${n} fles${n > 1 ? "sen" : ""} afgevinkt en genoteerd.`);
+    flash(`${n} fles${n > 1 ? "sen" : ""} ${info.werkwoord} en genoteerd.`);
   };
 
   // ---- vorige versie terugzetten ----
@@ -2383,46 +2471,87 @@ function SommelierModal({ bottles, thread, setThread, onClose }) {
   );
 }
 
-// ---------- fles gedronken ----------
+// ---------- fles uit de kelder ----------
+function KeuzeChips({ waarden, gekozen, onWissel }) {
+  return (
+    <div style={S.chipKeuzeRij}>
+      {waarden.map((w) => {
+        const aan = gekozen.includes(w);
+        return (
+          <button key={w} type="button" onClick={() => onWissel(w)}
+            style={{ ...S.chipKeuze, ...(aan ? S.chipKeuzeAan : null) }}>
+            {aan ? "✓ " : ""}{w}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function DrinkModal({ b, onBevestig, onClose }) {
   const maxAantal = Math.max(1, num(b.quantity) || 1);
   const vandaag = new Date().toISOString().slice(0, 10);
+  const [reden, setReden] = useState("gedronken");
   const [aantal, setAantal] = useState(1);
   const [datum, setDatum] = useState(vandaag);
+  const [opbrengst, setOpbrengst] = useState("");
   const [herproef, setHerproef] = useState("");
   const [antw, setAntw] = useState({});
   const set = (k, v) => setAntw((a) => ({ ...a, [k]: v }));
+  const wissel = (k, w) => setAntw((a) => {
+    const lijst = Array.isArray(a[k]) ? a[k] : [];
+    return { ...a, [k]: lijst.includes(w) ? lijst.filter((x) => x !== w) : [...lijst, w] };
+  });
   const waarde = effVal(b).v;
+  const gedronken = reden === "gedronken";
+  const redenInfo = WEG_REDENEN.find((r) => r.k === reden) || WEG_REDENEN[0];
 
   return (
-    <Overlay onClose={onClose}>
+    <Overlay onClose={onClose} full>
       <div style={S.modalHead}>
         <div style={{ minWidth: 0 }}>
-          <h3 style={S.modalTitle}>Fles gedronken</h3>
+          <h3 style={S.modalTitle}>Fles uit de kelder</h3>
           <div style={{ ...S.rowSub, marginTop: 3 }}>{[b.producer, b.name, b.vintage].filter(Boolean).join(" · ")}</div>
         </div>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
       </div>
 
-      <div style={S.form}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", ...S.form }}>
+        <div style={S.field}>
+          <span style={S.fieldLabel}>Wat is ermee gebeurd</span>
+          <KeuzeChips waarden={WEG_REDENEN.map((r) => r.label)} gekozen={[redenInfo.label]}
+            onWissel={(l) => setReden((WEG_REDENEN.find((r) => r.label === l) || WEG_REDENEN[0]).k)} />
+        </div>
+
         <div style={S.formRow}>
           <div style={{ ...S.field, flex: "0 0 auto" }}>
             <span style={S.fieldLabel}>Hoeveel flessen</span>
             <QtyStepper value={aantal} onChange={(v) => setAantal(Math.min(maxAantal, Math.max(1, parseInt(v) || 1)))} big />
           </div>
-          <label style={{ ...S.field, flex: 1 }}>
+          <label style={{ ...S.field, flex: "1 1 150px" }}>
             <span style={S.fieldLabel}>Wanneer</span>
             <input style={S.input} type="date" value={datum} onChange={(e) => setDatum(e.target.value)} />
           </label>
+          {reden === "verkocht" && (
+            <label style={{ ...S.field, flex: "1 1 130px" }}>
+              <span style={S.fieldLabel}>Opbrengst per fles €</span>
+              <input style={S.input} type="number" inputMode="decimal" value={opbrengst}
+                placeholder={waarde > 0 ? String(Math.round(waarde)) : ""} onChange={(e) => setOpbrengst(e.target.value)} />
+            </label>
+          )}
         </div>
         <div style={{ ...S.mapCaption, marginTop: -4 }}>
           Er blijven er {Math.max(0, maxAantal - aantal)} over{waarde > 0 ? ` · samen ${eur(waarde * aantal)}` : ""}
+          {!gedronken ? " · telt niet mee in wat je gedronken hebt" : ""}
         </div>
 
-        {DRINK_VRAGEN.map((v) => (
-          <label key={v.k} style={S.field}>
+        {gedronken && DRINK_VRAGEN.map((v) => (
+          <div key={v.k} style={S.field}>
             <span style={S.fieldLabel}>{v.label}</span>
-            {v.keuzes ? (
+            {v.chips ? (
+              <KeuzeChips waarden={v.chips} gekozen={Array.isArray(antw[v.k]) ? antw[v.k] : []}
+                onWissel={(w) => wissel(v.k, w)} />
+            ) : v.keuzes ? (
               <select style={S.input} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)}>
                 {v.keuzes.map((k) => <option key={k} value={k}>{k || "—"}</option>)}
               </select>
@@ -2433,22 +2562,29 @@ function DrinkModal({ b, onBevestig, onClose }) {
               <input style={S.input} type={v.getal ? "number" : "text"} inputMode={v.getal ? "decimal" : undefined}
                 placeholder={v.hint} value={antw[v.k] || ""} onChange={(e) => set(v.k, e.target.value)} />
             )}
-          </label>
+          </div>
         ))}
 
-        <label style={S.field}>
-          <span style={S.fieldLabel}>Opnieuw proeven over</span>
-          <select style={S.input} value={herproef} onChange={(e) => setHerproef(e.target.value)}>
-            <option value="">niet van toepassing</option>
-            {[1, 2, 3, 5, 10].map((j) => <option key={j} value={j}>{j} jaar ({NOW + j})</option>)}
-          </select>
-        </label>
+        {gedronken && (
+          <label style={S.field}>
+            <span style={S.fieldLabel}>En nu? Wanneer opnieuw proeven</span>
+            <select style={S.input} value={herproef} onChange={(e) => setHerproef(e.target.value)}>
+              <option value="">niet van toepassing</option>
+              <optgroup label="Mijn oordeel nu">
+                {RIJPHEID.map((r) => <option key={r.k} value={r.k}>{r.label}</option>)}
+              </optgroup>
+              <optgroup label="Opnieuw proeven over">
+                {[1, 2, 3, 5, 10].map((j) => <option key={j} value={`j${j}`}>{j} jaar ({NOW + j})</option>)}
+              </optgroup>
+            </select>
+          </label>
+        )}
       </div>
 
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={onClose}>Annuleren</button>
-        <button style={S.btnPrimary} onClick={() => onBevestig({ aantal, datum, herproef, antw })}>
-          <Check size={15} /> {aantal} fles{aantal > 1 ? "sen" : ""} afvinken
+        <button style={S.btnPrimary} onClick={() => onBevestig({ reden, aantal, datum, herproef, opbrengst, antw })}>
+          <Check size={15} /> {aantal} fles{aantal > 1 ? "sen" : ""} {redenInfo.werkwoord}
         </button>
       </div>
     </Overlay>
@@ -2825,12 +2961,17 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
               </p>
             )}
             {log.slice().reverse().map((e, i) => (
-              <div key={i} style={{ ...S.bodyText, fontSize: sc(13), marginTop: 6 }}>
-                <span style={{ color: "var(--ink)" }}>{e.d} · {num(e.n) || 1} fles{(num(e.n) || 1) > 1 ? "sen" : ""}</span>
+              <div key={i} style={{ ...S.bodyText, fontSize: sc(13), marginTop: 10 }}>
+                <span style={{ color: "var(--ink)" }}>
+                  {e.d} · {logSoort(e)} · {num(e.n) || 1} fles{(num(e.n) || 1) > 1 ? "sen" : ""}
+                </span>
                 {num(e.v) > 0 && <span style={{ color: "var(--ink-dim)" }}> · {eur(num(e.v) * (num(e.n) || 1))}</span>}
-                {DRINK_VRAGEN.filter((v) => e[v.k]).map((v) => (
-                  <div key={v.k} style={{ color: "var(--ink-dim)", marginLeft: 2 }}>{v.label}: {e[v.k]}</div>
-                ))}
+                {num(e.opbrengst) > 0 && <span style={{ color: "var(--gold)" }}> · opbrengst {eur(num(e.opbrengst) * (num(e.n) || 1))}</span>}
+                {e.rijpheid && <div style={{ color: "var(--gold)" }}>{e.rijpheid}</div>}
+                {DRINK_VRAGEN.map((v) => {
+                  const w = Array.isArray(e[v.k]) ? e[v.k].join(", ") : e[v.k];
+                  return w ? <div key={v.k} style={{ color: "var(--ink-dim)" }}>{v.label}: {w}</div> : null;
+                })}
               </div>
             ))}
           </div>
@@ -2842,7 +2983,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave, onPatch, onG
       <div style={S.modalFoot}>
         {onGedronken && (num(b.quantity) || 0) > 0 && (
           <button style={{ ...S.btnGhost, borderColor: "var(--wine-bright)", color: "var(--ink)" }} onClick={onGedronken}>
-            <Wine size={15} /> Gedronken
+            <Wine size={15} /> Fles weg
           </button>
         )}
         <button style={S.btnGhost} onClick={onEnrich} disabled={b._loading}>
@@ -3126,6 +3267,9 @@ const S = {
   chatA: { alignSelf: "flex-start", maxWidth: "94%", background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: "14px 14px 14px 4px", padding: "14px 17px", fontSize: 16, lineHeight: 1.7, whiteSpace: "pre-wrap" },
   chatBar: { display: "flex", gap: 8, alignItems: "flex-end", marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", flexShrink: 0 },
 
+  chipKeuzeRij: { display: "flex", flexWrap: "wrap", gap: 6 },
+  chipKeuze: { background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink2)", padding: "7px 11px", borderRadius: 999, fontSize: 13.5, cursor: "pointer", lineHeight: 1.2 },
+  chipKeuzeAan: { background: "rgba(123,30,43,.35)", borderColor: "var(--wine-bright)", color: "var(--ink)", fontWeight: 600 },
   chips: { display: "flex", flexWrap: "wrap", gap: 7 },
   chip: { fontSize: 12, border: "1px solid var(--line2)", color: "var(--ink2)", padding: "4px 11px", borderRadius: 20, background: "var(--bg2)", textTransform: "capitalize", letterSpacing: 0.2 },
   sectionLabel: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 1.4, color: "var(--gold-dim)", marginBottom: 8, fontWeight: 600 },
