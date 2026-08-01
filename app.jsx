@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v58";
+const APP_VERSION = "kelder-v59";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1733,6 +1733,13 @@ export default function App() {
     flash(`${n} fles${n > 1 ? "sen" : ""} ${info.werkwoord} en genoteerd.`);
   };
 
+  // ---- etiket lezen voor een fles die niet in de kelder ligt ----
+  const leesEtiket = async (files) => {
+    const imgs = (await Promise.all(files.map(readImageFile))).filter(Boolean);
+    if (!imgs.length) throw new Error("Kon deze foto niet lezen.");
+    return await analyzePhoto(imgs);
+  };
+
   // ---- een regel uit het logboek terugdraaien ----
   // Wissen is hier een echte ongedaanmaking: de flessen komen terug in de kelder,
   // want de enige reden om een regel te wissen is dat ze fout stond. Een fles die
@@ -2073,6 +2080,7 @@ export default function App() {
         onProeven={() => setDrinkFles({ ...detail, _proeven: true })}
         onGedronken={() => setDrinkFles(detail)} />}
       {drinkFles && <DrinkModal b={drinkFles} nieuw={!!drinkFles._nieuw} alleenProeven={!!drinkFles._proeven}
+        onEtiket={leesEtiket}
         onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
       {showKaart && <KaartModal bottles={kelder} onKies={(b) => setDetail(b)} onClose={() => setShowKaart(false)} />}
       {showLog && <LogboekModal bottles={bottles} onKies={(b) => setDetail(b)} onWis={wisLogRegel}
@@ -2716,7 +2724,7 @@ function KeuzeChips({ waarden, gekozen, onWissel }) {
 
 // alleenProeven = het draaiboek zonder een fles af te boeken: je noteert wat je
 // proefde, de kelder blijft ongemoeid.
-function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
+function DrinkModal({ b, nieuw, alleenProeven, onEtiket, onBevestig, onClose }) {
   const maxAantal = nieuw ? 12 : Math.max(1, num(b.quantity) || 1);
   const vandaag = new Date().toISOString().slice(0, 10);
   const [reden, setReden] = useState("gedronken");
@@ -2729,6 +2737,26 @@ function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
   const [wijn, setWijn] = useState({ producer: b.producer || "", name: b.name || "", vintage: b.vintage || "", color: b.color || "rood" });
   const [kostte, setKostte] = useState("");
   const setW = (k, v) => setWijn((w) => ({ ...w, [k]: v }));
+  const fotoVeld = useRef();
+  const [leest, setLeest] = useState(false);
+  const [kiezen, setKiezen] = useState(false);
+  const [fotoFout, setFotoFout] = useState("");
+  // Neemt alleen over wat gevonden werd; wat jij al intikte blijft staan.
+  const neemOver = (d) => setWijn((w) => ({
+    producer: d.producer || w.producer,
+    name: d.name || w.name,
+    vintage: d.vintage ? String(d.vintage) : w.vintage,
+    color: COLORS.includes(String(d.color || "").toLowerCase()) ? String(d.color).toLowerCase() : w.color,
+  }));
+  const leesFoto = async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length || !onEtiket) return;
+    setLeest(true); setFotoFout("");
+    try { neemOver(await onEtiket(files)); }
+    catch (err) { setFotoFout(err.message || "Kon deze foto niet lezen."); }
+    finally { setLeest(false); }
+  };
   const set = (k, v) => setAntw((a) => ({ ...a, [k]: v }));
   const wissel = (k, w) => setAntw((a) => {
     const lijst = Array.isArray(a[k]) ? a[k] : [];
@@ -2755,6 +2783,23 @@ function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", ...S.form }}>
         {alleenProeven ? null : nieuw ? (
           <>
+            {/* zelfde hulp als bij het toevoegen aan de kelder: lees het etiket of
+                kies de wijn uit de catalogus */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input ref={fotoVeld} type="file" accept="image/*" multiple hidden onChange={leesFoto} />
+              <button style={{ ...S.btnGhost, flex: "1 1 150px" }} onClick={() => fotoVeld.current && fotoVeld.current.click()} disabled={leest}>
+                {leest ? <Loader2 className="spin" size={15} /> : <Camera size={15} />} {leest ? "Etiket lezen…" : "Foto van het etiket"}
+              </button>
+              <button style={{ ...S.btnGhost, flex: "1 1 150px" }} onClick={() => setKiezen(true)} disabled={leest}>
+                <Search size={15} /> Zoek de wijn op
+              </button>
+            </div>
+            {fotoFout && <div style={{ ...S.jobError, fontSize: 13 }}><AlertCircle size={15} /> {fotoFout}</div>}
+            {kiezen && (
+              <KiesWijnModal start={[wijn.producer, wijn.name].filter(Boolean).join(" ")}
+                onKies={(w) => { neemOver({ producer: w.producer, name: w.name }); setKiezen(false); }}
+                onClose={() => setKiezen(false)} />
+            )}
             <div style={S.formRow}>
               <label style={{ ...S.field, flex: 1 }}>
                 <span style={S.fieldLabel}>Producent</span>
@@ -2792,7 +2837,7 @@ function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
         )}
 
         <div style={S.formRow}>
-          <div style={{ ...S.field, flex: "0 0 auto", display: alleenProeven ? "none" : undefined }}>
+          <div style={{ ...S.field, flex: "0 0 auto", ...(alleenProeven ? { display: "none" } : null) }}>
             <span style={S.fieldLabel}>Hoeveel flessen</span>
             <QtyStepper value={aantal} onChange={(v) => setAantal(Math.min(maxAantal, Math.max(1, parseInt(v) || 1)))} big />
           </div>
@@ -2808,7 +2853,7 @@ function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
             </label>
           )}
         </div>
-        <div style={{ ...S.mapCaption, marginTop: -4, display: alleenProeven ? "none" : undefined }}>
+        <div style={{ ...S.mapCaption, marginTop: -4, ...(alleenProeven ? { display: "none" } : null) }}>
           {nieuw
             ? (waarde > 0 ? `Samen ${eur(waarde * aantal)} · telt mee in wat je gedronken hebt` : "Telt mee in wat je gedronken hebt")
             : `Er blijven er ${Math.max(0, maxAantal - aantal)} over${waarde > 0 ? ` · samen ${eur(waarde * aantal)}` : ""}${!gedronken ? " · telt niet mee in wat je gedronken hebt" : ""}`}

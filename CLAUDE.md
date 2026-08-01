@@ -283,6 +283,12 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - De knop "Logboek" in de kop opent `LogboekModal`: alle regels van alle flessen,
   nieuw naar oud, per maand gegroepeerd, met de tellingen erboven. Tik je een regel
   aan, dan open je die fles.
+- Een fles van elders vul je op DEZELFDE manieren in als een fles voor de kelder:
+  met een foto van het etiket of met de wijnkiezer. Bouw daar geen aparte manier
+  voor; hergebruik `analyzePhoto()` en `KiesWijnModal`.
+- Zet in een stijl NOOIT `display: undefined` om iets voorwaardelijk te tonen: dat
+  wist de `display: flex` uit `S.field` en het opschrift springt naast het veld.
+  Gebruik `...(voorwaarde ? { display: "none" } : null)`.
 - Een fles die je ELDERS dronk (restaurant, bij vrienden) krijgt `buitenKelder: true`
   en `quantity: "0"`. Ze telt mee in het logboek en bij de sommelier, maar NIET in
   de kelderlijst, de statistiek, de kaart, de Excel-export of de dubbelcontrole:
