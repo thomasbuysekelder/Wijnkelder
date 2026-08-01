@@ -4,13 +4,13 @@ import {
   Search, Plus, Upload, Download, Camera, X, Wine, Trash2,
   Pencil, Check, Loader2, FileSpreadsheet, AlertCircle, ArrowUpDown,
   MapPin, ExternalLink, MoreHorizontal, Layers, Save, Clipboard,
-  MessageCircle, Send, MessageSquare
+  MessageCircle, Send, MessageSquare, RefreshCw
 } from "lucide-react";
 
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v20";
+const APP_VERSION = "kelder-v21";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -20,7 +20,7 @@ const EMPTY = {
   purchasePrice: "", retailValue: "", ownValue: "",
   supplier: "", score: "", drinkFrom: "", drinkTo: "", notes: "", tasteNotes: "",
   grape: "", description: "", reviews: "", lat: "", lng: "", placeName: "", imageUrl: "", enriched: false,
-  priceNote: "", priceManual: false, priceUrl: "",
+  priceNote: "", priceManual: false, priceUrl: "", verifyNote: "",
 };
 
 // Een zelf ingetikte retailwaarde blijft altijd staan: een latere opzoeking mag
@@ -638,6 +638,12 @@ async function lookupWineFull(b) {
   // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
   const herkomst = vivinoOrigin(offers, b);
   if (herkomst && herkomst.country) { res.region = herkomst.region || res.region; res.country = herkomst.country; }
+  // Gaven de webbronnen niets terug, dan is er niets geverifieerd: dat moet je
+  // kunnen zien, anders blijft een gok van de etiketlezing er staan als feit.
+  const webBron = main.sources.webBron || "de webzoekopdracht";
+  res.verifyNote = (items.length || rev.items.length)
+    ? ""
+    : `Niet geverifieerd: ${webBron} gaf geen resultaten, dus streek, beschrijving en recensies konden niet nagekeken worden.`;
   // Wordt er geen prijs gevonden terwijl een bron onbereikbaar was, zeg dat er
   // dan bij. Anders lijkt een geblokkeerde bron op "deze wijn bestaat nergens".
   if (res.retailPrice === "") {
@@ -731,7 +737,9 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
   const had = b.retailValue !== "" && b.retailValue != null;
   const locked = b.priceManual || (keepFilled && had);
   const price = locked || !found
-    ? { retailValue: b.retailValue ?? "", priceNote: had ? (b.priceNote || "") : "geen prijs gevonden", priceUrl: had ? (b.priceUrl || "") : "" }
+    // r.priceNote bevat de REDEN (welke bron niets gaf); die mag hier niet
+    // verloren gaan, anders zie je enkel een kale "geen prijs gevonden"
+    ? { retailValue: b.retailValue ?? "", priceNote: had ? (b.priceNote || "") : (r.priceNote || "geen prijs gevonden"), priceUrl: had ? (b.priceUrl || "") : "" }
     : { retailValue: r.retailPrice, priceNote: r.priceNote || "", priceUrl: r.priceUrl || "" };
   return {
     grape: b.grape || r.grape || "",
@@ -745,6 +753,7 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
     lat: r.lat ?? b.lat ?? "",
     lng: r.lng ?? b.lng ?? "",
     ...price,
+    verifyNote: r.verifyNote || "",
     drinkFrom: keep(b.drinkFrom, r.drinkFrom),
     drinkTo: keep(b.drinkTo, r.drinkTo),
     score: keep(b.score, r.score),
@@ -1099,7 +1108,7 @@ export default function App() {
   const autoLookup = (b) => {
     lookupWineFull(b)
       .then((r) => { patchBottle(b.id, enrichPatch(b, r, { keepFilled: true })); flash("Info opgezocht en aangevuld."); })
-      .catch(() => flash("Toegevoegd. Info opzoeken lukte niet."));
+      .catch(() => flash("Toegevoegd. Info vernieuwen lukte niet."));
   };
   const removeBottle = (id) => setBottles((prev) => prev.filter((b) => b.id !== id));
 
@@ -1222,7 +1231,7 @@ export default function App() {
       // een mislukte opzoeking niet stil inslikken: anders zie je gewoon een fles
       // zonder prijs en weet je niet dat er iets misging
       .catch((e) => setPhotoJobs((prev) => prev && prev.map((j) => j.id === jobId
-        ? { ...j, status: "done", error: e.message || "Info opzoeken lukte niet." } : j)));
+        ? { ...j, status: "done", error: e.message || "Info vernieuwen lukte niet." } : j)));
   // default: each selected photo is a separate wine
   const onPhotoFiles = async (e) => {
     const files = [...(e.target.files || [])];
@@ -1812,7 +1821,7 @@ function BulkModal({ initial, onAdd, onClose }) {
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button></div>
       <p style={{ ...S.bodyText, color: "var(--ink-dim)", margin: "0 0 14px" }}>
         {prefilled ? "Voeg extra jaargangen toe van deze wijn. " : "Zelfde wijn, in één keer meerdere jaargangen en aantallen. "}
-        Open daarna per jaargang de detailkaart en tik op 'Info opzoeken' voor prijs, drinkvenster en recensies.
+        Open daarna per jaargang de detailkaart en tik op 'Vernieuwen' voor prijs, drinkvenster en recensies.
       </p>
       <div style={S.form}>
         <div style={S.formRow}>{fld("producer", "Producent")}{fld("name", "Wijn / cuvée")}</div>
@@ -2072,6 +2081,12 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
       </div>
 
       <div style={{ maxHeight: "72vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+        {b.verifyNote && (
+          <div style={{ ...S.jobError, color: "var(--amber)", padding: "10px 13px", fontSize: sc(13), background: "rgba(210,160,73,.08)", border: "1px solid rgba(210,160,73,.3)", borderRadius: 10, alignItems: "flex-start" }}>
+            <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 2 }} /> <span>{b.verifyNote}</span>
+          </div>
+        )}
+
         {/* chips */}
         <div style={S.chips}>
           <span style={{ ...S.chip, fontSize: sc(12) }}>{b.color}</span>
@@ -2114,7 +2129,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
           ) : b._loading ? (
             <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}><Loader2 className="spin" size={16} /> Locatie opzoeken…</div>
           ) : (
-            <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}>Tik op 'Info opzoeken' voor locatie, recensies en actuele prijs.</div>
+            <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}>Tik onderaan op 'Vernieuwen' voor locatie, recensies en actuele prijs.</div>
           )}
         </div>
 
@@ -2124,7 +2139,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
           {b._loading && !b.description ? (
             <div style={{ ...S.mapPlaceholder, fontSize: sc(13) }}><Loader2 className="spin" size={16} /> Info ophalen…</div>
           ) : (
-            <p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.description || "Tik onderaan op 'Info opzoeken' voor een beschrijving van deze jaargang."}</p>
+            <p style={{ ...S.bodyText, fontSize: sc(14) }}>{b.description || "Tik onderaan op 'Vernieuwen' voor een beschrijving van deze jaargang."}</p>
           )}
         </div>
         <div>
@@ -2170,7 +2185,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
 
       <div style={S.modalFoot}>
         <button style={S.btnGhost} onClick={onEnrich} disabled={b._loading}>
-          {b._loading ? <Loader2 className="spin" size={15} /> : <Search size={15} />} Info opzoeken
+          {b._loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} Vernieuwen
         </button>
         <button style={S.btnPrimary} onClick={onEdit}><Pencil size={15} /> Bewerken</button>
       </div>
