@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v28";
+const APP_VERSION = "kelder-v29";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -611,6 +611,8 @@ async function lookupWineFull(b) {
   "priceVintage": jaargang waarop die prijs slaat (getal) of null,
   "priceSource": "naam van de winkel of website uit de zoekresultaten waar die prijs staat, anders null",
   "priceSourceIndex": het nummer [n] van het zoekresultaat waar die prijs staat, anders null,
+  "priceCurrency": "de muntcode van dat bedrag zoals het er staat (EUR, USD, GBP...), anders null",
+  "priceInclVat": true als het bedrag inclusief btw is, false als het uitdrukkelijk exclusief btw is, null als het er niet bij staat,
   "drinkFrom": beste drinkjaar vanaf voor deze jaargang (getal),
   "drinkTo": beste drinkjaar tot voor deze jaargang (getal),
   "score": kritiekscore 0-100 die in de zoekresultaten staat voor DEZE jaargang, anders null,
@@ -670,6 +672,7 @@ async function lookupWineFull(b) {
       "Staat er een Wikipedia-blok bij, gebruik dat voor de beschrijving en de herkomst (streek en land), maar NOOIT als recensie of score. " +
       "Een Franstalige naam betekent niet dat de wijn uit Frankrijk komt — er wordt ook in België, Zwitserland en Canada Franstalig geëtiketteerd. Laat region en country leeg als de resultaten er niets over zeggen. " +
       "Prijs: nooit schatten. Staat er geen concreet bedrag in de zoekresultaten, dan is retailPrice null. Het gaat altijd om één fles van 75 cl. " +
+      "Neem het bedrag over ZOALS het er staat en vul priceCurrency en priceInclVat naar waarheid in; reken zelf niets om, dat doet de app. " +
       "Recensies: schrijf 2 à 3 zinnen over hoe deze wijn proeft en wat recensenten ervan vinden, ALLEEN op basis van de meegeleverde recensieresultaten, met de bronnaam erbij. " +
       "Verzin nooit een citaat, punt of bron. Vind je niets voor deze jaargang, dan mag je recensies van een ANDERE jaargang van dezelfde wijn samenvatten, " +
       "maar dan begint reviews verplicht met 'Recensie van jaargang JAAR, ter indicatie:' en blijft score null. Staat er in de resultaten echt niets over deze wijn, dan is reviews exact 'Geen recensie gevonden.' " +
@@ -691,7 +694,7 @@ async function lookupWineFull(b) {
   const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
   const parsed = extractJson(text);
   if (!parsed) throw new Error("Kon jaargang niet opzoeken.");
-  const res = applyReviews(applyMarketPrice(parsed, mp, b, items), vr);
+  const res = applyReviews(applyMarketPrice(parsed, mp, b, items, main.rates), vr);
   // harde herkomstdata van Vivino wint van wat het model uit de naam afleidde
   const herkomst = vivinoOrigin(offers, b);
   if (herkomst && herkomst.country) { res.region = herkomst.region || res.region; res.country = herkomst.country; }
@@ -724,7 +727,7 @@ async function lookupWineFull(b) {
 // uit de zoekresultaten haalde (met bron), (4) niets — dan blijft de prijs leeg.
 // De bron-URL komt altijd uit onze eigen lijst (via het nummer van het
 // zoekresultaat), nooit uit de tekst van het model: zo kan ze niet verzonnen zijn.
-function applyMarketPrice(res, mp, b, items) {
+function applyMarketPrice(res, mp, b, items, rates) {
   const btwNoot = (mp && mp.btw ? ", btw bijgeteld" : "") +
     (mp && mp.munten && mp.munten.length ? `, omgerekend van ${mp.munten.join(" en ")} (ECB-dagkoers)` : "");
   const found = num(res.retailPrice);
@@ -748,11 +751,24 @@ function applyMarketPrice(res, mp, b, items) {
     res.priceNote = `winkelprijs van jaargang${mp.years.length > 1 ? "en" : ""} ${mp.years.join(", ")}, ter indicatie` + btwNoot;
     res.priceUrl = mp.url || "";
   } else if (found > 0 && src) {
+    // Ook deze route moet in euro én inclusief btw eindigen, anders vervuilt ze de
+    // statistiek. Kunnen we niet omrekenen, dan liever geen prijs.
+    const munt = String(res.priceCurrency || "EUR").toUpperCase();
+    let bedrag = found;
+    let extra = "";
+    if (munt !== "EUR") {
+      const koers = rates && rates[munt];
+      if (!koers) { res.retailPrice = ""; res.priceNote = `prijs gevonden in ${munt}, maar geen koers beschikbaar`; res.priceUrl = ""; return res; }
+      bedrag = bedrag / koers;
+      extra += `, omgerekend van ${munt} (ECB-dagkoers)`;
+    }
+    if (res.priceInclVat === false) { bedrag = bedrag * BTW_TARIEF; extra += ", btw bijgeteld"; }
+    bedrag = Math.round(bedrag * 100) / 100;
     const py = parseInt(res.priceVintage), y = parseInt(b.vintage);
-    res.retailPrice = found;
-    res.priceNote = py && y && py !== y
+    res.retailPrice = bedrag;
+    res.priceNote = (py && y && py !== y
       ? `winkelprijs van jaargang ${py} bij ${src}, ter indicatie`
-      : `winkelprijs uit de zoekresultaten (${src})`;
+      : `winkelprijs uit de zoekresultaten (${src})`) + extra;
     res.priceUrl = (hit && hit.url) || "";
   } else {
     res.retailPrice = "";
@@ -1606,7 +1622,7 @@ function BottleFields({ v, on }) {
       <div style={S.formRow}>{fld("grape", "Druif")}{fld("score", "Score", "number", 0.5)}</div>
       <div style={S.formRow}>{fld("region", "Streek")}{fld("country", "Land")}</div>
       <div style={S.formRow}>{fld("location", "Locatie in kelder")}{fld("supplier", "Leverancier")}</div>
-      <div style={S.formRow}>{fld("purchasePrice", "Aankoopprijs (€/fles)", "number")}{fld("retailValue", "Retailwaarde (€/fles)", "number")}</div>
+      <div style={S.formRow}>{fld("purchasePrice", "Aankoopprijs (€/fles)", "number")}{fld("retailValue", "Retailwaarde (€/fles, incl. btw)", "number")}</div>
       <label style={S.field}>
         <span style={S.fieldLabel}>Eigen geschatte waarde (€/fles)</span>
         <input style={S.input} type="number" inputMode="decimal" value={v.ownValue ?? ""} onChange={(e) => on("ownValue", e.target.value)}
@@ -2217,7 +2233,7 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
           <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Waarde per fles</div>
           <div style={S.valGrid}>
             <ValCell label="Aankoop" value={money(b.purchasePrice) > 0 ? eur(money(b.purchasePrice)) : "—"} sc={sc} />
-            <ValCell label="Retail" value={money(b.retailValue) > 0 ? eur(money(b.retailValue)) : "—"} sc={sc} />
+            <ValCell label="Retail" value={money(b.retailValue) > 0 ? eur(money(b.retailValue)) : "—"} sub={money(b.retailValue) > 0 ? "incl. btw" : ""} sc={sc} />
             <ValCell
               label="Eigen schatting"
               value={ev.empty ? (ev.fallback ? `${eur(ev.v)}*` : "—") : eur(ev.v)}
