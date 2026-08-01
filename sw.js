@@ -2,7 +2,7 @@
 // Cache-versie: verhoog dit nummer bij elke update; oude caches worden
 // automatisch opgeruimd. Je kelder-data staat in localStorage en wordt
 // hierdoor NOOIT geraakt.
-const CACHE = "kelder-v43";
+const CACHE = "kelder-v44";
 const ASSETS = ["/", "/index.html", "/app.js", "/manifest.json", "/icon-192.png", "/icon-512.png", "/icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -20,6 +20,9 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   // API-aanroepen altijd naar het netwerk
   if (url.pathname.startsWith("/api/")) return;
+  // Kaarttegels en andere externe bronnen niet mee in de cache stoppen: die
+  // horen niet bij de app en zouden ze alleen maar doen opzwellen.
+  if (url.origin !== self.location.origin) return;
   if (e.request.method !== "GET") return;
   // Netwerk eerst (zodat updates meteen binnenkomen), cache als vangnet offline
   e.respondWith(

@@ -68,6 +68,22 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   (HTTP 202). `/api/search` moet dus met POST zoeken. Elke link zit verpakt in een
   redirect (`/l/?uddg=…`); `realUrl()` pakt die uit tot de echte bron-URL.
 
+## Kaart
+- De knop "Kaart" in de kop toont alle flessen die een `lat`/`lng` hebben op een
+  echte kaart (`KaartModal`). Flessen die nog geen locatie hebben, worden geteld
+  en vermeld — nooit stilzwijgend weggelaten.
+- Leaflet zit MEE IN DE BUNDEL (`npm run bundle` gebruikt `--loader:.css=text`,
+  de stijl wordt bij het openen in de pagina gezet). Geen CDN, geen sleutel, geen
+  kosten. De tegels komen van OpenStreetMap; zonder netwerk blijft de kaart leeg,
+  de rest van de app werkt gewoon door.
+- `sw.js` cachet enkel bestanden van de app zelf; kaarttegels van een ander domein
+  gaan bewust rechtstreeks naar het netwerk.
+- Flessen binnen ongeveer een kilometer van elkaar (2 decimalen) staan op één pin,
+  met het aantal flessen erin. Tik je op een pin, dan verschijnt de lijst en kan je
+  naar de detailkaart springen.
+- Er wordt NOOIT iets opgezocht bij het openen van de kaart: ze gebruikt alleen de
+  coördinaten die al bij de fles staan.
+
 ## Meldingen (anoniem)
 - Onderaan het menu staat "Meld een probleem of idee" → `FeedbackModal` →
   `/api/feedback` → Resend.

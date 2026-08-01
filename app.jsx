@@ -4,13 +4,17 @@ import {
   Search, Plus, Upload, Download, Camera, X, Wine, Trash2,
   Pencil, Check, Loader2, FileSpreadsheet, AlertCircle, ArrowUpDown,
   MapPin, ExternalLink, MoreHorizontal, Layers, Save, Clipboard,
-  MessageCircle, Send, MessageSquare, RefreshCw, Eye, EyeOff
+  MessageCircle, Send, MessageSquare, RefreshCw, Eye, EyeOff, Globe
 } from "lucide-react";
+// Leaflet zit mee in de bundel (geen CDN, geen sleutel, geen kosten). De kaart
+// zelf komt van OpenStreetMap; die tegels zijn gratis maar hebben wel netwerk nodig.
+import L from "leaflet";
+import leafletCss from "leaflet/dist/leaflet.css";
 
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v43";
+const APP_VERSION = "kelder-v44";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -1222,6 +1226,7 @@ export default function App() {
   const [showSomm, setShowSomm] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [drinkFles, setDrinkFles] = useState(null);
+  const [showKaart, setShowKaart] = useState(false);
   // financiële cijfers standaard verborgen; de keuze blijft bewaard
   const [toonGeld, setToonGeld] = useState(false);
   useEffect(() => { try { if (LS && LS.getItem(GELD_KEY) === "1") setToonGeld(true); } catch {} }, []);
@@ -1630,6 +1635,7 @@ export default function App() {
             {savedAt && <span style={S.savedTag}><Check size={11} /> bewaard {savedAt.toLocaleTimeString("nl-BE", { hour: "2-digit", minute: "2-digit" })}</span>}
           </div>
           <div style={S.actions}>
+            <button style={S.btnGhost} onClick={() => setShowKaart(true)} title="Mijn wijnen op de kaart"><Globe size={15} /> Kaart</button>
             <button style={S.btnGhost} onClick={() => setShowSomm(true)}><MessageCircle size={15} /> Sommelier</button>
             <button style={S.btnPrimary} onClick={() => filePhoto.current.click()}><Camera size={15} /> Foto</button>
             <button style={S.btnPrimary} onClick={() => setEdit({ ...EMPTY })}><Plus size={15} /> Fles</button>
@@ -1757,6 +1763,7 @@ export default function App() {
         onPatch={(patch) => patchBottle(detail.id, patch)}
         onGedronken={() => setDrinkFles(detail)} />}
       {drinkFles && <DrinkModal b={drinkFles} onBevestig={boekGedronken} onClose={() => setDrinkFles(null)} />}
+      {showKaart && <KaartModal bottles={bottles} onKies={(b) => setDetail(b)} onClose={() => setShowKaart(false)} />}
       {edit && <EditModal edit={edit} setEdit={setEdit} onSave={saveEdit}
         onMultiVintage={(e) => { setBulkInit({ producer: e.producer, name: e.name, region: e.region, country: e.country, color: e.color, grape: e.grape, location: e.location, supplier: e.supplier }); setEdit(null); setShowBulk(true); }} />}
       {importPending && <ImportModal rows={importPending} onApply={applyImport} onCancel={() => setImportPending(null)} />}
@@ -2416,6 +2423,112 @@ function DrinkModal({ b, onBevestig, onClose }) {
   );
 }
 
+// ---------- kaart van de hele kelder ----------
+// De stijl van Leaflet zit als tekst in de bundel; we zetten ze een keer in de
+// pagina wanneer de kaart voor het eerst opengaat.
+let leafletCssGezet = false;
+function zetLeafletCss() {
+  if (leafletCssGezet || typeof document === "undefined") return;
+  const el = document.createElement("style");
+  el.textContent = leafletCss;
+  document.head.appendChild(el);
+  leafletCssGezet = true;
+}
+
+// Flessen op ongeveer dezelfde plek horen op een pin samen (2 decimalen ~ 1 km).
+function kaartPunten(bottles) {
+  const groepen = new Map();
+  for (const b of bottles) {
+    const lat = num(b.lat), lng = num(b.lng);
+    if (!lat || !lng) continue;
+    if ((num(b.quantity) || 0) <= 0) continue;
+    const k = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+    if (!groepen.has(k)) groepen.set(k, { lat, lng, plaats: b.placeName || [b.region, b.country].filter(Boolean).join(", "), flessen: [] });
+    groepen.get(k).flessen.push(b);
+  }
+  return [...groepen.values()];
+}
+
+function KaartModal({ bottles, onClose, onKies }) {
+  const doos = useRef(null);
+  const [sel, setSel] = useState(null);
+  const punten = useMemo(() => kaartPunten(bottles), [bottles]);
+  const zonder = bottles.filter((b) => (num(b.quantity) || 0) > 0 && !(num(b.lat) && num(b.lng))).length;
+
+  useEffect(() => {
+    zetLeafletCss();
+    if (!doos.current) return;
+    const map = L.map(doos.current, { zoomControl: true, attributionControl: true })
+      .setView([46.5, 4], 4);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 17, attribution: "© OpenStreetMap",
+    }).addTo(map);
+
+    const laag = [];
+    for (const p of punten) {
+      const n = p.flessen.reduce((s, b) => s + (num(b.quantity) || 0), 0);
+      const m = L.marker([p.lat, p.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div class="kelderpin">${n}</div>`,
+          iconSize: [30, 30], iconAnchor: [15, 15],
+        }),
+        title: p.plaats,
+      }).addTo(map);
+      m.on("click", () => setSel(p));
+      laag.push(m);
+    }
+    if (laag.length) {
+      const g = L.featureGroup(laag);
+      map.fitBounds(g.getBounds().pad(0.25), { maxZoom: 9 });
+    }
+    // de kaart meet zichzelf pas juist als het venster echt getekend is
+    const t = setTimeout(() => map.invalidateSize(), 120);
+    return () => { clearTimeout(t); map.remove(); };
+  }, [punten]);
+
+  const totaal = punten.reduce((s, p) => s + p.flessen.reduce((x, b) => x + (num(b.quantity) || 0), 0), 0);
+
+  return (
+    <Overlay onClose={onClose} full>
+      <div style={S.modalHead}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={S.modalTitle}>Mijn wijnen op de kaart</h3>
+          <div style={{ ...S.rowSub, marginTop: 3 }}>
+            {totaal} fles{totaal === 1 ? "" : "sen"} op {punten.length} plek{punten.length === 1 ? "" : "ken"}
+            {zonder ? ` · ${zonder} zonder locatie (tik op Vernieuwen bij die fles)` : ""}
+          </div>
+        </div>
+        <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div ref={doos} style={S.kaart} />
+        {sel && (
+          <div style={S.kaartPaneel}>
+            <div style={{ ...S.sectionLabel, marginBottom: 6 }}>{sel.plaats || "Deze plek"}</div>
+            {sel.flessen.map((b) => (
+              <button key={b.id} className="mi" style={{ ...S.menuItem, fontSize: 15 }}
+                onClick={() => { onKies(b); onClose(); }}>
+                <Wine size={15} style={{ color: "var(--wine-bright)", flexShrink: 0 }} />
+                <span style={{ minWidth: 0 }}>
+                  {[b.producer, b.name].filter(Boolean).join(" · ")}{b.vintage ? ` ${b.vintage}` : ""}
+                  <span style={{ color: "var(--ink-dim)" }}> · {num(b.quantity) || 0}×</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        {!punten.length && (
+          <div style={{ ...S.mapPlaceholder, fontSize: 14 }}>
+            Nog geen enkele fles heeft een locatie. Open een fles en tik op 'Vernieuwen'.
+          </div>
+        )}
+      </div>
+    </Overlay>
+  );
+}
+
 // ---------- melding (anoniem) ----------
 function FeedbackModal({ onClose }) {
   const [text, setText] = useState("");
@@ -2829,6 +2942,11 @@ html,body{margin:0;background:#12100E;-webkit-text-size-adjust:100%;text-size-ad
 .row:hover{background:var(--bg2)!important;}
 .row:hover:before{background:var(--wine-bright);}
 .iconbtn:hover{background:var(--bg3)!important;color:var(--ink)!important;}
+.kelderpin { display:flex; align-items:center; justify-content:center; width:30px; height:30px;
+  border-radius:50%; background:#7B1E2B; color:#F6EFE6; border:2px solid #E7D9A0;
+  font-size:12.5px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+.leaflet-container { background:#12100E; font-family:inherit; }
+.leaflet-popup-content-wrapper, .leaflet-control-attribution { font-size:11px; }
 .mi:hover{background:var(--bg3)!important;}
 button{transition:filter .12s ease, background .12s ease, border-color .12s ease;}
 button:not(.iconbtn):not(:disabled):hover{filter:brightness(1.08);}
@@ -2962,6 +3080,8 @@ const S = {
   mapPanel: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, textDecoration: "none", cursor: "pointer" },
   mapLink: { display: "inline-flex", alignItems: "center", gap: 4, color: "var(--gold)", fontSize: 12, textDecoration: "none", whiteSpace: "nowrap" },
   mapCaption: { fontSize: 12, color: "var(--ink-dim)" },
+  kaart: { flex: 1, minHeight: 240, borderRadius: 12, overflow: "hidden", border: "1px solid var(--line2)", background: "#12100E" },
+  kaartPaneel: { maxHeight: "34vh", overflowY: "auto", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, padding: "12px 10px", flexShrink: 0 },
   mapPlaceholder: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-dim)", background: "var(--bg)", border: "1px dashed var(--line2)", borderRadius: 12, padding: "20px 15px" },
   bodyText: { fontSize: 14, lineHeight: 1.65, color: "var(--ink2)", margin: 0 },
   valGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9 },

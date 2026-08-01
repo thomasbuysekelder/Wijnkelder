@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "bundle": "esbuild app.jsx --bundle --minify --format=iife --loader:.jsx=jsx --outfile=app.js"
+    "bundle": "esbuild app.jsx --bundle --minify --format=iife --loader:.jsx=jsx --loader:.css=text --outfile=app.js"
   },
   "dependencies": {
+    "leaflet": "^1.9.4",
     "lucide-react": "0.383.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
