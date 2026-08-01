@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v38";
+const APP_VERSION = "kelder-v39";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -925,7 +925,7 @@ function enrichPatch(b, r, { keepFilled = false } = {}) {
 // Zo kan het model niets aanraden dat niet aan je vraag voldoet, en blijft de
 // context klein genoeg om de kost per vraag laag te houden.
 const SOMM_MAX_CHARS = 30000;
-const SOMM_LEGENDE = "producent en wijn | jaargang | kleur | druif | streek | prijs per fles | drinkvenster en status | aantal | locatie | score | proefnotities";
+const SOMM_LEGENDE = "producent en wijn | jaargang | kleur | druif | streek | waarde | aankoopprijs | winkel | drinkvenster en status | aantal | formaat | locatie | score | eigen proefnotitie | recensies | beschrijving";
 
 // Deze functie is bewust deterministisch: geen AI, gewoon lezen wat er staat.
 function parseCriteria(q) {
@@ -982,23 +982,30 @@ function cellarLine(b, withNotes) {
   const st = drinkStatus(b);
   const window = [b.drinkFrom, b.drinkTo].filter(Boolean).join("-");
   const v = effVal(b).v;
+  const kort = (t, n) => String(t || "").replace(/\s+/g, " ").trim().slice(0, n);
   const parts = [
     [b.producer, b.name].filter(Boolean).join(" ") || "onbekende wijn",
     b.vintage || "NV",
     b.color,
     b.grape,
     [b.region, b.country].filter(Boolean).join(", "),
-    v > 0 ? `€${Math.round(v)}` : "prijs onbekend",
+    v > 0 ? `waarde €${Math.round(v)}` : "waarde onbekend",
+    money(b.purchasePrice) > 0 ? `gekocht voor €${Math.round(money(b.purchasePrice))}` : "",
+    b.supplier ? `bij ${kort(b.supplier, 40)}` : "",
     [window, st.label !== "—" ? st.label : ""].filter(Boolean).join(" ") || "geen drinkvenster",
     `${num(b.quantity) || 1}x`,
     formaatKort(b.volumeMl),
     b.location,
     num(b.score) > 0 ? `score ${b.score}` : "",
   ];
-  let line = parts.filter(Boolean).join(" | ");
-  if (withNotes && b.tasteNotes) line += ` | proefnota: ${String(b.tasteNotes).replace(/\s+/g, " ").slice(0, 200)}`;
-  if (withNotes && b.description) line += ` | over de wijn: ${String(b.description).replace(/\s+/g, " ").slice(0, 200)}`;
-  return line.slice(0, 500);
+  // De basisregel wordt begrensd, de teksten krijgen elk hun eigen ruimte. Zo kan
+  // een lange wijnnaam nooit de eigen proefnotitie van de gebruiker wegduwen.
+  let line = parts.filter(Boolean).join(" | ").slice(0, 320);
+  if (withNotes && b.tasteNotes) line += ` | MIJN EIGEN PROEFNOTITIE: "${kort(b.tasteNotes, 600)}"`;
+  if (withNotes && b.notes) line += ` | mijn notitie: ${kort(b.notes, 200)}`;
+  if (withNotes && b.reviews) line += ` | recensies: ${kort(b.reviews, 300)}`;
+  if (withNotes && b.description) line += ` | over de wijn: ${kort(b.description, 250)}`;
+  return line;
 }
 // bouwt de lijst op; wordt ze te groot, dan vallen eerst de proefnotities
 // weg en pas daarna de laatste wijnen (dat wordt dan gemeld in het antwoord)
@@ -1020,7 +1027,11 @@ function cellarContext(bottles) {
 // voor een duurder model koos (±2 cent per vraag). Zie CLAUDE.md.
 const SOMMELIER_MODEL = "claude-sonnet-4-6";
 const SOMM_SYSTEM =
-  "Je bent de persoonlijke sommelier van deze wijnkelder. Je krijgt een KANDIDATENLIJST: dat zijn de flessen die de app al selecteerde omdat ze aan de harde criteria van de vraag voldoen. " +
+  "Je bent de persoonlijke sommelier van deze wijnkelder. Je krijgt een KANDIDATENLIJST met de flessen die aan de vraag voldoen, met per fles alles wat de app erover weet. " +
+  "ALLES in die lijst is beschikbare informatie — ook wat achter 'MIJN EIGEN PROEFNOTITIE' staat: dat schreef de eigenaar zelf. Gebruik die notities actief en citeer er kort uit wanneer ze relevant zijn; zeg NOOIT dat je ze niet hebt. " +
+  "Begin METEEN met je aanbeveling, zonder inleiding als 'op basis van wat ik vind' of 'goede vraag'. " +
+  "Wees concreet: zeg wat DEZE fles onderscheidt — de jaargang, de rijping, de eigen proefnotitie, de score, waar ze ligt. Vermijd algemeenheden die voor elke rode of witte wijn gelden. " +
+  "Geef hoogstens drie suggesties, de beste eerst, en durf te zeggen welke jij zou opentrekken en waarom. " +
   "Regels: (1) beveel UITSLUITEND flessen uit die kandidatenlijst aan, nooit een wijn die er niet in staat; " +
   "(2) verzin nooit een prijs, jaargang, score, streek of proefnota die er niet bij staat; " +
   "(3) respecteer alle criteria die bij de vraag staan; " +
@@ -1083,8 +1094,15 @@ async function askWineQuestion({ b, question, history }) {
     ["streek", [b.region, b.country].filter(Boolean).join(", ")],
     ["drinkvenster", [b.drinkFrom, b.drinkTo].filter(Boolean).join("-")],
     ["status", st.label !== "—" ? st.label : ""],
+    ["formaat", formaatLabel(b.volumeMl)],
+    ["aantal in kelder", b.quantity], ["locatie", b.location],
+    ["aankoopprijs", money(b.purchasePrice) > 0 ? `EUR ${money(b.purchasePrice)}` : ""],
+    ["gekocht bij", b.supplier],
+    ["huidige waarde", effVal(b).v > 0 ? `EUR ${Math.round(effVal(b).v)}` : ""],
+    ["score", num(b.score) > 0 ? String(b.score) : ""],
     ["beschrijving", b.description], ["recensies", b.reviews],
-    ["mijn proefnotities", b.tasteNotes], ["mijn notities", b.notes],
+    ["MIJN EIGEN PROEFNOTITIE (door de eigenaar zelf geschreven)", b.tasteNotes],
+    ["mijn notities", b.notes],
   ].filter((r) => String(r[1] || "").trim())
     .map((r) => `${r[0]}: ${String(r[1]).replace(/\s+/g, " ").slice(0, 300)}`).join("\n");
 
@@ -1095,10 +1113,13 @@ async function askWineQuestion({ b, question, history }) {
     .map((t) => `Eerdere vraag: ${t.q}\nJouw eerdere antwoord (beknopt): ${String(t.a).replace(/\s+/g, " ").slice(0, 500)}`)
     .join("\n\n");
   const body = {
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 700,
+    model: SOMMELIER_MODEL,
+    max_tokens: 900,
+    thinking: { type: "disabled" },
     system:
-      "Je bent een ervaren sommelier en beantwoordt een vraag over één bepaalde fles uit de kelder van de gebruiker. " +
+      "Je bent de persoonlijke sommelier van deze wijnliefhebber en beantwoordt een vraag over één bepaalde fles uit zijn kelder. " +
+      "ALLES onder 'De fles waarover ik iets vraag' is beschikbare informatie, ook de eigen proefnotitie van de eigenaar. Gebruik die actief en citeer er kort uit wanneer ze relevant is; zeg NOOIT dat je ze niet hebt. " +
+      "Begin METEEN met het antwoord, zonder inleiding als 'op basis van wat ik vind'. Wees concreet over DEZE fles en jaargang en vermijd algemeenheden die voor elke wijn van dat type gelden. " +
       "Steun op de meegeleverde zoekresultaten voor feiten (geschiedenis van het domein, stijl, jaargang, prijzen, scores) en noem de bron als je iets overneemt. " +
       "Verzin nooit een feit, jaartal, score, prijs of citaat. Weet je iets niet of staat het niet in de resultaten, zeg dat dan gewoon; " +
       "algemene kennis mag, maar zeg er dan bij dat je het niet kon nakijken. " +

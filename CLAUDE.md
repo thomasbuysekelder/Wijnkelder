@@ -121,7 +121,14 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
 - Een vervolgvraag stuurt de laatste twee beurten beknopt mee (antwoord afgekapt
   op 600 tekens).
 
-## Uitzondering op de modelregel: de sommelier draait op Sonnet
+## Uitzondering op de modelregel: beide sommeliers draaien op Sonnet
+- `SOMMELIER_MODEL = "claude-sonnet-4-6"` geldt voor de kelderbrede sommelier EN
+  voor de vraag over één fles op de detailkaart (`askWineQuestion`). Dat zijn de
+  enige twee plekken waar geen Haiku draait; de eigenaar keurde ±2 cent per
+  vraag over één fles goed omdat het antwoord op Haiku te vlak was.
+- Beide krijgen ALLES mee wat de app over een fles weet, inclusief de eigen
+  proefnotitie van de gebruiker (gemarkeerd als `MIJN EIGEN PROEFNOTITIE`). De
+  opdracht verbiedt uitdrukkelijk te beweren dat die notitie er niet is.
 - `SOMMELIER_MODEL = "claude-sonnet-4-6"` is de ENIGE plek waar geen Haiku draait.
   De eigenaar keurde hiervoor 3 à 5 cent per vraag goed, omdat de kwaliteit van
   het advies hier het belangrijkste is. Alle andere aanroepen blijven Haiku.
