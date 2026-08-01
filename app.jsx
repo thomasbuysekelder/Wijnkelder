@@ -10,7 +10,7 @@ import {
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v17";
+const APP_VERSION = "kelder-v18";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -32,10 +32,10 @@ function fieldPatch(k, v) {
 
 // which value counts for portfolio math: own estimate if set, else retail
 function effVal(b) {
-  const hasOwn = b.ownValue !== "" && b.ownValue != null && !isNaN(parseFloat(String(b.ownValue).replace(",", ".")));
+  const hasOwn = b.ownValue !== "" && b.ownValue != null && money(b.ownValue) > 0;
   return {
-    v: hasOwn ? num(b.ownValue) : num(b.retailValue),
-    fallback: !hasOwn && num(b.retailValue) > 0,
+    v: hasOwn ? money(b.ownValue) : money(b.retailValue),
+    fallback: !hasOwn && money(b.retailValue) > 0,
     empty: !hasOwn,
   };
 }
@@ -43,6 +43,26 @@ function effVal(b) {
 // ---------- helpers ----------
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const num = (v) => { const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+// Geldbedragen apart lezen: "1.200" is twaalfhonderd euro, niet 1,2. Een punt of
+// komma gevolgd door precies drie cijfers is een duizendtalscheiding; één of twee
+// cijfers erna is een decimaal. Bewust NIET voor jaartallen, aantallen of
+// coördinaten — daar zou 43.317 ineens 43317 worden.
+function money(v) {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  const t = String(v ?? "").replace(/[^\d.,-]/g, "");
+  if (!t) return 0;
+  const laatste = Math.max(t.lastIndexOf(","), t.lastIndexOf("."));
+  let s;
+  if (laatste < 0) s = t;
+  else {
+    const achter = t.length - laatste - 1;
+    s = achter >= 1 && achter <= 2
+      ? t.slice(0, laatste).replace(/[.,]/g, "") + "." + t.slice(laatste + 1)
+      : t.replace(/[.,]/g, "");
+  }
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
 const eur = (n) =>
   new Intl.NumberFormat("nl-BE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n || 0);
 
@@ -113,19 +133,49 @@ function decodeBackup(text) {
 }
 
 // ---------- storage ----------
-async function loadBottles() {
-  try {
-    const raw = await rawGet(STORAGE_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(list)) return [];
-    return list.map((b) => {
-      if (b.retailValue == null && b.currentValue != null) b.retailValue = b.currentValue;
-      return { ...EMPTY, ...b };
-    });
-  } catch { return []; }
+// De hoofdsleutel blijft ongewijzigd. Daarnaast houden we één generatie terug bij:
+// vóór elke overschrijving gaat de vorige inhoud naar PREV_KEY. Zo is er altijd een
+// vangnet, ook als er ooit iets misgaat tijdens het bewaren.
+const PREV_KEY = STORAGE_KEY + "-vorige";
+
+// Elke fles krijgt gegarandeerd een eigen id: zonder id wist het verwijderen van
+// één fles ze allemaal, omdat ze dan niet meer uit elkaar te houden zijn.
+function normBottle(b) {
+  const o = { ...b };
+  if (o.retailValue == null && o.currentValue != null) o.retailValue = o.currentValue;
+  return { ...EMPTY, ...o, id: o.id || uid() };
 }
+
+// Geeft { list, ok } terug. ok=false betekent: de opslag was NIET leeg maar
+// onleesbaar. De app mag dan niets bewaren, anders wist ze de kelder.
+async function loadBottles() {
+  let raw;
+  try { raw = await rawGet(STORAGE_KEY); } catch { return { list: [], ok: false }; }
+  if (raw == null || raw === "") return { list: [], ok: true };  // echt een lege kelder
+  try {
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return { list: [], ok: false };
+    return { list: list.map(normBottle), ok: true };
+  } catch { return { list: [], ok: false }; }
+}
+
+// De vorige generatie, voor 'Vorige versie terugzetten'.
+async function loadPrevious() {
+  try {
+    const raw = await rawGet(PREV_KEY);
+    if (!raw) return null;
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list.map(normBottle) : null;
+  } catch { return null; }
+}
+
 async function saveBottles(list) {
-  return rawSet(STORAGE_KEY, JSON.stringify(list.map(cleanBottle)));
+  const nieuw = JSON.stringify(list.map(cleanBottle));
+  try {
+    const vorige = await rawGet(STORAGE_KEY);
+    if (vorige && vorige !== nieuw) await rawSet(PREV_KEY, vorige);
+  } catch { /* het vangnet mag het bewaren zelf nooit tegenhouden */ }
+  return rawSet(STORAGE_KEY, nieuw);
 }
 
 // ---------- Excel ----------
@@ -923,7 +973,17 @@ export default function App() {
   const bottlesRef = useRef(bottles);
   useEffect(() => { bottlesRef.current = bottles; }, [bottles]);
 
-  useEffect(() => { loadBottles().then((b) => { setBottles(b); setLoaded(true); }); }, []);
+  // Mislukt het lezen, dan blijft 'loaded' bewust false: het bewaar-effect hieronder
+  // slaat dan niets op, zodat een onleesbare kelder niet overschreven wordt met leeg.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
+  useEffect(() => {
+    loadBottles().then(({ list, ok }) => {
+      if (!ok) { setLoadFailed(true); return; }
+      setBottles(list); setLoaded(true);
+    });
+    loadPrevious().then((p) => setHasPrev(!!(p && p.length)));
+  }, []);
   // single source of truth for saving: persist on every change to bottles
   useEffect(() => {
     if (!loaded) return;
@@ -975,7 +1035,7 @@ export default function App() {
     let flessen = 0, cost = 0, value = 0;
     for (const b of bottles) {
       const q = num(b.quantity) || 0;
-      flessen += q; cost += num(b.purchasePrice) * q; value += effVal(b).v * q;
+      flessen += q; cost += money(b.purchasePrice) * q; value += effVal(b).v * q;
     }
     const gain = value - cost;
     const pct = cost > 0 ? (gain / cost) * 100 : 0;
@@ -1045,18 +1105,32 @@ export default function App() {
     flash(`${added} toegevoegd${merged ? `, ${merged} samengevoegd` : ""}.`);
   };
 
+  // ---- vorige versie terugzetten ----
+  const doRestorePrevious = async () => {
+    const vorige = await loadPrevious();
+    if (!vorige || !vorige.length) { flash("Er is geen vorige versie bewaard."); return; }
+    const zetTerug = () => {
+      setBottles(vorige); setLoaded(true); setLoadFailed(false);
+      flash(`Vorige versie teruggezet (${vorige.length} wijnen).`);
+    };
+    if (bottles.length) askConfirm(`Je huidige kelder (${bottles.length} wijnen) vervangen door de vorige versie (${vorige.length} wijnen)?`, zetTerug);
+    else zetTerug();
+  };
+
   // ---- backup / restore (text, works without downloads) ----
   const doRestore = (text, mode) => {
     const parsed = decodeBackup(text);
     if (!parsed) { flash("Kon deze backup niet lezen."); return; }
-    const norml = parsed.map((b) => ({ ...EMPTY, ...b, id: b.id || uid() }));
+    const norml = parsed.map(normBottle);
+    // na een mislukte start mag er weer bewaard worden zodra er goede data staat
+    const hervat = () => { setLoaded(true); setLoadFailed(false); };
     if (mode === "replace") {
-      const doIt = () => { persist(norml); flash(`${norml.length} flessen hersteld (vervangen).`); setShowRestore(false); };
+      const doIt = () => { persist(norml); hervat(); flash(`${norml.length} flessen hersteld (vervangen).`); setShowRestore(false); };
       if (bottles.length) askConfirm(`Je hele kelder (${bottles.length} wijnen) vervangen door deze backup (${norml.length})?`, doIt);
       else doIt();
     } else {
       const { list, added, merged } = mergeLists(bottles, norml);
-      persist(list);
+      persist(list); hervat();
       flash(`${added} hersteld${merged ? `, ${merged} samengevoegd` : ""}.`);
       setShowRestore(false);
     }
@@ -1219,6 +1293,9 @@ export default function App() {
                     <div style={S.menuSep} />
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowBackup(true); }}><Save size={15} /> Backup (kopieer)</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); setShowRestore(true); }}><Clipboard size={15} /> Herstel (plak)</button>
+                    <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); doRestorePrevious(); }} disabled={!hasPrev}>
+                      <ArrowUpDown size={15} /> Vorige versie terugzetten
+                    </button>
                     <div style={S.menuSep} />
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); fileImport.current.click(); }}><Upload size={15} /> Excel importeren</button>
                     <button className="mi" style={S.menuItem} onClick={() => { setMenuOpen(false); exportXlsx(bottles); }}><Download size={15} /> Excel exporteren</button>
@@ -1273,7 +1350,24 @@ export default function App() {
       </div>
 
       {/* ---- list ---- */}
-      {!loaded ? (
+      {loadFailed ? (
+        <div style={{ ...S.emptyBig, gap: 14 }}>
+          <AlertCircle size={40} strokeWidth={1} style={{ color: "var(--red)" }} />
+          <h2 style={S.emptyTitle}>Je kelder kon niet gelezen worden</h2>
+          <p style={{ ...S.emptyText, maxWidth: 460 }}>
+            De opgeslagen gegevens zijn onleesbaar. Er is <strong style={{ color: "var(--ink)" }}>niets gewist</strong>:
+            de app bewaart voorlopig niets, zodat je kelder niet overschreven wordt.
+            Zet hieronder de vorige versie terug, of plak een backup.
+          </p>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", marginTop: 6 }}>
+            <button style={S.btnPrimary} onClick={doRestorePrevious} disabled={!hasPrev}>
+              <ArrowUpDown size={15} /> Vorige versie terugzetten
+            </button>
+            <button style={S.btnGhost} onClick={() => setShowRestore(true)}><Clipboard size={15} /> Herstel (plak backup)</button>
+          </div>
+          {!hasPrev && <p style={{ ...S.emptyText, fontSize: 13 }}>Er is geen vorige versie bewaard; gebruik je backup-tekst.</p>}
+        </div>
+      ) : !loaded ? (
         <div style={S.empty}><Loader2 className="spin" size={22} /> <span>Kelder laden…</span></div>
       ) : filtered.length === 0 ? (
         <EmptyState hasBottles={bottles.length > 0}
@@ -1418,7 +1512,7 @@ function BottleFields({ v, on }) {
       <label style={S.field}>
         <span style={S.fieldLabel}>Eigen geschatte waarde (€/fles)</span>
         <input style={S.input} type="number" inputMode="decimal" value={v.ownValue ?? ""} onChange={(e) => on("ownValue", e.target.value)}
-          placeholder={num(v.retailValue) > 0 ? `leeg = retail (${eur(num(v.retailValue))})` : "leeg = retail"} />
+          placeholder={money(v.retailValue) > 0 ? `leeg = retail (${eur(money(v.retailValue))})` : "leeg = retail"} />
       </label>
       <div style={S.formRow}>{fld("drinkFrom", "Drink vanaf", "number")}{fld("drinkTo", "Drink tot", "number")}</div>
       <label style={S.field}>
@@ -2018,8 +2112,8 @@ function DetailModal({ b, scale, onClose, onEdit, onEnrich, onSave }) {
         <div>
           <div style={{ ...S.sectionLabel, fontSize: sc(11) }}>Waarde per fles</div>
           <div style={S.valGrid}>
-            <ValCell label="Aankoop" value={num(b.purchasePrice) > 0 ? eur(num(b.purchasePrice)) : "—"} sc={sc} />
-            <ValCell label="Retail" value={num(b.retailValue) > 0 ? eur(num(b.retailValue)) : "—"} sc={sc} />
+            <ValCell label="Aankoop" value={money(b.purchasePrice) > 0 ? eur(money(b.purchasePrice)) : "—"} sc={sc} />
+            <ValCell label="Retail" value={money(b.retailValue) > 0 ? eur(money(b.retailValue)) : "—"} sc={sc} />
             <ValCell
               label="Eigen schatting"
               value={ev.empty ? (ev.fallback ? `${eur(ev.v)}*` : "—") : eur(ev.v)}
