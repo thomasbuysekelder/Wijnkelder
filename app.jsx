@@ -14,7 +14,7 @@ import leafletCss from "leaflet/dist/leaflet.css";
 const STORAGE_KEY = "wijnkelder-flessen-v1";
 const NOW = new Date().getFullYear();
 // Hou dit gelijk met het cachenummer in sw.js; het gaat mee met een melding.
-const APP_VERSION = "kelder-v51";
+const APP_VERSION = "kelder-v52";
 
 const COLORS = ["rood", "wit", "rosé", "mousserend", "versterkt", "oranje"];
 
@@ -2203,12 +2203,27 @@ function BottleFields({ v, on, boven }) {
 function EditModal({ edit, setEdit, onSave, onMultiVintage }) {
   const set = (k, v) => setEdit({ ...edit, ...fieldPatch(k, v) });
   const canMulti = edit.producer || edit.name;
+  const [kiezen, setKiezen] = useState(false);
   return (
     <Overlay onClose={() => setEdit(null)}>
       <div style={S.modalHead}>
         <h3 style={S.modalTitle}>{edit.id ? "Fles bewerken" : "Nieuwe fles"}</h3>
         <button style={S.iconBtn} onClick={() => setEdit(null)}><X size={18} /></button>
       </div>
+      {kiezen && (
+        <KiesWijnModal start={wineTerm(edit)}
+          onKies={(w) => {
+            setEdit({ ...edit, producer: w.producer || edit.producer, name: w.name || edit.name,
+              region: w.region || edit.region, country: w.country || edit.country,
+              imageUrl: w.image || edit.imageUrl });
+            setKiezen(false);
+          }}
+          onClose={() => setKiezen(false)} />
+      )}
+      <button style={{ ...S.btnGhost, width: "100%", marginBottom: 10 }}
+        onClick={() => setKiezen(true)} disabled={!canMulti}>
+        <Search size={15} /> Zoek de juiste wijn op
+      </button>
       <BottleFields v={edit} on={set} boven={onMultiVintage && (
         <button style={{ ...S.btnGhost, width: "100%", justifyContent: "center" }}
           onClick={() => onMultiVintage(edit)} disabled={!canMulti}>
@@ -2280,32 +2295,42 @@ function ImportModal({ rows, onApply, onCancel }) {
 // job is nog bezig zolang het etiket gelezen of de info opgezocht wordt
 const busy = (job) => job.status === "pending" || job.status === "enriching";
 function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage, onClose }) {
-  const [queries, setQueries] = useState({});
-  const [searching, setSearching] = useState(null);
+  const [kiesVoor, setKiesVoor] = useState(null);
   const setData = (id, k, v) => setJobs((prev) => prev.map((j) => j.id === id ? { ...j, data: { ...j.data, ...fieldPatch(k, v) } } : j));
 
-  const doSearch = async (jobId) => {
-    const q = (queries[jobId] || "").trim();
-    if (!q) return;
-    setSearching(jobId);
-    try {
-      const res = await searchWineByName(q);
-      let draft = null;
-      setJobs((prev) => prev.map((j) => {
-        if (j.id !== jobId) return j;
-        const d = resultToData(res);
-        draft = { ...d, quantity: j.data?.quantity ?? d.quantity, location: j.data?.location ?? "", purchasePrice: j.data?.purchasePrice ?? "", ownValue: j.data?.ownValue ?? "" };
-        return { ...j, status: "enriching", error: null, data: draft };
-      }));
-      // meteen ook prijs, drinkvenster en recensies erbij
-      if (draft && onLookup) await onLookup(jobId, draft);
-    } catch (e) {
-      setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, error: e.message } : j));
-    } finally { setSearching(null); }
+  // De gekozen wijn overschrijft wat de etiketlezing ervan maakte, en daarna
+  // halen we prijs, drinkvenster en recensies op VOOR DIE wijn.
+  const neemKeuze = async (jobId, w) => {
+    setKiesVoor(null);
+    let draft = null;
+    setJobs((prev) => prev.map((j) => {
+      if (j.id !== jobId) return j;
+      draft = {
+        ...(j.data || {}),
+        producer: w.producer || (j.data || {}).producer || "",
+        name: w.name || (j.data || {}).name || "",
+        region: w.region || (j.data || {}).region || "",
+        country: w.country || (j.data || {}).country || "",
+        imageUrl: w.image || (j.data || {}).imageUrl || "",
+      };
+      return { ...j, status: "enriching", error: null, data: draft };
+    }));
+    if (draft && onLookup) {
+      try { await onLookup(jobId, draft); }
+      catch (e) { setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, error: e.message } : j)); }
+    }
   };
+
 
   return (
     <Overlay onClose={onClose} wide>
+      {kiesVoor && (() => {
+        const job = jobs.find((j) => j.id === kiesVoor);
+        return (
+          <KiesWijnModal start={job && job.data ? wineTerm(job.data) : ""}
+            onKies={(w) => neemKeuze(kiesVoor, w)} onClose={() => setKiesVoor(null)} />
+        );
+      })()}
       <div style={S.modalHead}>
         <h3 style={S.modalTitle}>Foto-analyse</h3>
         <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
@@ -2348,9 +2373,9 @@ function PhotoModal({ jobs, setJobs, onAdd, onAddPhoto, onLookup, onMultiVintage
                   </button>
                 )}
                 {!busy(job) && (
-                  <ZoekRij waarde={queries[job.id] || ""} bezig={searching === job.id}
-                    onWijzig={(v) => setQueries((q) => ({ ...q, [job.id]: v }))}
-                    onZoek={() => doSearch(job.id)} />
+                  <button style={{ ...S.btnGhost, marginTop: 8, width: "100%" }} onClick={() => setKiesVoor(job.id)}>
+                    <Search size={15} /> Niet juist? Kies de wijn zelf
+                  </button>
                 )}
               </div>
             </div>
@@ -2797,19 +2822,103 @@ function DrinkModal({ b, nieuw, alleenProeven, onBevestig, onClose }) {
   );
 }
 
-// Staat BEWUST op modulehoogte. Maak hier nooit opnieuw een component binnen een
-// andere component van: React gooit het invoerveld dan bij elke toetsaanslag weg
-// en je kan maar één letter tegelijk typen.
-function ZoekRij({ waarde, bezig, onWijzig, onZoek }) {
+
+// ---------- de juiste wijn kiezen ----------
+// Bij "Vini Franchetti Contrada G" vindt de catalogus niets, en bij "Chambertin"
+// vindt ze er vijf. Beide keren kan de app het niet zelf weten. Daarom tonen we
+// wat er gevonden werd en kies JIJ. Wat je kiest, is daarna zeker juist.
+async function zoekWijnen(term) {
+  const q = String(term || "").trim();
+  if (!q) return [];
+  const res = await fetchSearch({ wine: { term: q }, max: 1 });
+  const gezien = new Set();
+  const uit = [];
+  for (const o of (res.offers || [])) {
+    if (!o.producer && !o.name) continue;
+    const sleutel = `${norm(o.producer)}|${norm(o.name)}`;
+    if (gezien.has(sleutel)) continue;
+    gezien.add(sleutel);
+    uit.push({
+      producer: o.producer || "", name: o.name || "",
+      region: o.region || "", country: o.country || "",
+      image: o.image || "", jaargangen: [],
+    });
+  }
+  // per wijn bijhouden welke jaargangen er te zien waren; dat helpt herkennen
+  for (const o of (res.offers || [])) {
+    const w = uit.find((x) => norm(x.producer) === norm(o.producer) && norm(x.name) === norm(o.name));
+    if (w && o.vintage && !w.jaargangen.includes(String(o.vintage))) w.jaargangen.push(String(o.vintage));
+  }
+  return uit.slice(0, 12);
+}
+
+function KiesWijnModal({ start, onKies, onClose }) {
+  const [term, setTerm] = useState(String(start || "").trim());
+  const [bezig, setBezig] = useState(false);
+  const [lijst, setLijst] = useState(null);
+  const [fout, setFout] = useState("");
+
+  const zoek = async (t) => {
+    const q = String(t ?? term).trim();
+    if (!q || bezig) return;
+    setBezig(true); setFout(""); setLijst(null);
+    try {
+      setLijst(await zoekWijnen(q));
+    } catch (e) {
+      setFout(e.message || "Zoeken lukte niet.");
+    } finally { setBezig(false); }
+  };
+
+  // meteen zoeken met wat er al bij de fles staat
+  useEffect(() => { if (String(start || "").trim()) zoek(String(start).trim()); }, []);
+
   return (
-    <div style={S.searchRow}>
-      <input style={{ ...S.input, flex: 1 }} placeholder="Niet juist? Zoek op naam, bv. Passopisciaro Contrada G 2015"
-        value={waarde} onChange={(e) => onWijzig(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") onZoek(); }} />
-      <button style={S.btnGhost} onClick={onZoek} disabled={bezig}>
-        {bezig ? <Loader2 className="spin" size={15} /> : <Search size={15} />} Zoek
-      </button>
-    </div>
+    <Overlay onClose={onClose} full>
+      <div style={S.modalHead}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={S.modalTitle}>Welke wijn is het?</h3>
+          <div style={{ ...S.rowSub, marginTop: 3 }}>Kies de juiste; prijs, foto en recensies volgen die keuze.</div>
+        </div>
+        <button style={S.iconBtn} onClick={onClose}><X size={18} /></button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <input style={{ ...S.input, flex: 1 }} value={term} autoFocus
+          placeholder="bv. Passopisciaro Contrada Guardiola"
+          onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") zoek(); }} />
+        <button style={S.btnPrimary} onClick={() => zoek()} disabled={bezig || !term.trim()}>
+          {bezig ? <Loader2 className="spin" size={15} /> : <Search size={15} />} Zoek
+        </button>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        {bezig && <div style={{ ...S.mapPlaceholder, fontSize: 14 }}><Loader2 className="spin" size={16} /> Zoeken…</div>}
+        {fout && <div style={{ ...S.jobError, fontSize: 14 }}><AlertCircle size={15} /> {fout}</div>}
+        {!bezig && lijst && !lijst.length && (
+          <div style={{ ...S.mapPlaceholder, fontSize: 14, display: "block", lineHeight: 1.5 }}>
+            Niets gevonden voor "{term}". Probeer de naam van het domein zoals hij op de voorkant staat,
+            zonder de vermelding van de bottelaar. Bij een Etna-wijn van Franchetti werkt bijvoorbeeld
+            "Passopisciaro Contrada Guardiola" wel, en "Vini Franchetti" niet.
+          </div>
+        )}
+        {!bezig && lijst && lijst.map((w, i) => (
+          <button key={i} className="mi" style={S.kiesRij} onClick={() => onKies(w)}>
+            {w.image
+              ? <img src={w.image} alt="" style={S.kiesFoto} onError={(e) => { e.target.style.visibility = "hidden"; }} />
+              : <div style={S.kiesFoto} />}
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ color: "var(--ink)", fontSize: 15, fontWeight: 600 }}>{w.name || "(zonder naam)"}</div>
+              <div style={{ ...S.rowSub, marginTop: 2 }}>{w.producer}</div>
+              <div style={{ ...S.rowSub, marginTop: 2, color: "var(--ink-dim)" }}>
+                {[w.region, w.country].filter(Boolean).join(", ")}
+                {w.jaargangen.length ? ` · jaargangen ${w.jaargangen.sort().join(", ")}` : ""}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </Overlay>
   );
 }
 
@@ -3647,6 +3756,8 @@ const S = {
 
   verkenRij: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" },
   verkenKnop: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, flex: "1 1 108px", minWidth: 0, background: "var(--bg2)", border: "1px solid var(--line)", color: "var(--ink2)", height: 40, borderRadius: 10, fontSize: 13.5, fontWeight: 500, cursor: "pointer" },
+  kiesRij: { display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid var(--bg3)", padding: "12px 4px", cursor: "pointer", color: "var(--ink)" },
+  kiesFoto: { width: 46, height: 62, objectFit: "contain", flexShrink: 0, background: "var(--bg)", borderRadius: 6 },
   logTellers: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9 },
   logRij: { display: "flex", alignItems: "flex-start", gap: 8, width: "100%", borderBottom: "1px solid var(--bg3)", padding: "11px 4px" },
   logKnop: { flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "var(--ink)" },

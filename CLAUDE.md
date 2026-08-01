@@ -41,6 +41,11 @@ build-instellingen in bij, tenzij je weet wat er in het Vercel-dashboard staat.
   jaargang, (2) Vivino-marktprijs van naburige jaargangen ("ter indicatie"),
   (3) een bedrag dat het model LETTERLIJK uit de zoeksnippets haalt, mét bron
   (`priceSource`; zonder bron telt het niet), (4) niets → leeg.
+- Kan de app het niet zeker weten, dan LAAT ZE KIEZEN. `KiesWijnModal` toont de
+  wijnen die de catalogus teruggaf (naam, producent, streek, jaargangen, etiket) en
+  de gebruiker duidt de juiste aan. Bereikbaar via "Zoek de juiste wijn op" in het
+  bewerkvenster en "Niet juist? Kies de wijn zelf" in het fotovenster. Wat gekozen
+  is, overschrijft de etiketlezing en stuurt daarna pas de opzoeking.
 - IS DIT WEL DEZELFDE WIJN? Dat is de belangrijkste vraag van de hele app.
   `vivinoKeuze()` neemt niet "alles boven een drempel", maar de groep aanbiedingen
   met de MINSTE vreemde woorden (`vreemdeWoorden()`), en enkel als mijn eigen naam
